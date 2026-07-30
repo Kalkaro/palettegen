@@ -482,7 +482,7 @@
       align-items: start;
       justify-content: end;
       border-radius: 16px;
-      background: var(--color);
+      background-color: var(--color);
       color: var(--ink);
       cursor: pointer;
       opacity: 0;
@@ -492,7 +492,16 @@
       transition:
         transform 300ms cubic-bezier(.2,.8,.2,1),
         border-radius 300ms ease,
-        filter 300ms ease;
+        filter 300ms ease,
+        background-color 650ms cubic-bezier(.2,.8,.2,1),
+        color 650ms ease;
+    }
+
+    .swatch.fade-only {
+      transform: none;
+      animation-name: swatch-fade;
+      animation-duration: 500ms;
+      animation-delay: 0ms;
     }
 
     .swatch:hover {
@@ -632,6 +641,7 @@
 
     @keyframes page-in { from { opacity: 0; transform: translateY(10px); } }
     @keyframes swatch-in { to { opacity: 1; transform: none; } }
+    @keyframes swatch-fade { to { opacity: 1; } }
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes prefix-sequence {
       0%, 100% {
@@ -826,14 +836,32 @@
       toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
     };
 
-    const renderPalette = (colors) => {
+    const renderPalette = (colors, fade = false) => {
+      const entries = Object.entries(colors);
+      const existing = [...palette.querySelectorAll(".swatch")];
+
+      if (fade && existing.length === entries.length) {
+        entries.forEach(([name, raw], index) => {
+          const hex = `#${raw.toLowerCase()}`;
+          root.style.setProperty(`--${name}`, hex);
+          const button = existing[index];
+          button.dataset.hex = hex;
+          button.style.setProperty("--color", hex);
+          button.style.setProperty("--ink", readableInk(raw));
+          button.querySelector("strong").textContent = name.toLowerCase();
+          button.querySelector("small").textContent = hex;
+        });
+        return;
+      }
+
       palette.replaceChildren();
-      Object.entries(colors).forEach(([name, raw], index) => {
+      entries.forEach(([name, raw], index) => {
         const hex = `#${raw.toLowerCase()}`;
         root.style.setProperty(`--${name}`, hex);
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "swatch";
+        button.className = fade ? "swatch fade-only" : "swatch";
+        button.dataset.hex = hex;
         button.style.cssText = `--i:${index};--color:${hex};--ink:${readableInk(raw)}`;
         const colorName = document.createElement("strong");
         const colorValue = document.createElement("small");
@@ -841,8 +869,8 @@
         colorValue.textContent = hex;
         button.append(colorName, colorValue);
         button.addEventListener("click", async () => {
-          await navigator.clipboard.writeText(hex);
-          notify(`copied ${hex}`);
+          await navigator.clipboard.writeText(button.dataset.hex);
+          notify(`copied ${button.dataset.hex}`);
         });
         palette.append(button);
       });
@@ -910,7 +938,7 @@
 
     const displayRecord = async (data) => {
       await displayWallpaper(data);
-      renderPalette(data.palette);
+      renderPalette(data.palette, true);
       setPaletteGenerating(false);
     };
 
@@ -1078,7 +1106,7 @@
         const completed = await waitForGeneration(data, version);
         if (!completed) return;
         currentRecordId = completed.id;
-        renderPalette(completed.palette);
+        renderPalette(completed.palette, true);
         setPaletteGenerating(false);
         await loadHistory();
       } catch (error) {
