@@ -92,21 +92,17 @@
       overflow: hidden;
       opacity: 0;
       white-space: nowrap;
-      transform: translateX(-.32em);
+      transform: translateX(-.18em);
     }
 
     .title-main { display: inline-block; white-space: nowrap; }
 
-    h1.title-sequence {
-      animation: title-sequence 3200ms cubic-bezier(.2,.8,.2,1);
-    }
-
     h1.title-sequence .title-prefix {
-      animation: prefix-sequence 3200ms cubic-bezier(.2,.8,.2,1);
+      animation: prefix-sequence 3000ms cubic-bezier(.2,.8,.2,1);
     }
 
     h1.title-sequence .title-main {
-      animation: main-sequence 3200ms cubic-bezier(.2,.8,.2,1);
+      animation: main-sequence 3000ms cubic-bezier(.2,.8,.2,1);
     }
 
     button {
@@ -637,35 +633,27 @@
     @keyframes page-in { from { opacity: 0; transform: translateY(10px); } }
     @keyframes swatch-in { to { opacity: 1; transform: none; } }
     @keyframes spin { to { transform: rotate(360deg); } }
-    @keyframes title-sequence {
-      0%, 100% { transform: translateX(0) scale(1); }
-      9% { transform: translateX(0) scale(.96); }
-      18% { transform: translateX(0) scale(1); }
-      30%, 72% { transform: translateX(-.12em) scale(1); }
-    }
-
     @keyframes prefix-sequence {
-      0%, 17%, 100% {
+      0%, 100% {
         max-width: 0;
         opacity: 0;
-        transform: translateX(-.32em);
+        transform: translateX(-.18em);
       }
-      31%, 72% {
-        max-width: 2.05em;
+      12%, 72% {
+        max-width: 2.42em;
         opacity: 1;
         transform: translateX(0);
       }
-      86% {
+      84% {
         max-width: 0;
         opacity: 0;
-        transform: translateX(-.2em);
+        transform: translateX(-.18em);
       }
     }
 
     @keyframes main-sequence {
-      0%, 18%, 100% { transform: translateX(0); }
-      31%, 72% { transform: translateX(-.1em); }
-      86% { transform: translateX(0); }
+      0%, 84%, 100% { transform: translateX(0); }
+      12%, 72% { transform: translateX(-.08em); }
     }
     @media (max-width: 780px) {
       header { grid-template-columns: 1fr; }
