@@ -216,6 +216,48 @@
       outline-offset: 3px;
     }
 
+    .generation-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .url-prompt {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      padding: 0;
+      border: 1px solid color-mix(in srgb, var(--base04) 22%, transparent);
+      border-radius: 50%;
+      background: var(--base01);
+      color: var(--base05);
+      cursor: pointer;
+      transition:
+        transform 300ms cubic-bezier(.2,.8,.2,1),
+        background-color 500ms ease,
+        opacity 250ms ease;
+    }
+
+    .url-prompt svg {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }
+
+    .url-prompt:hover { transform: translateY(-2px); }
+    .url-prompt:active { transform: scale(.92); }
+    .url-prompt:disabled { opacity: .45; cursor: wait; }
+    .url-prompt:focus-visible {
+      outline: 3px solid var(--base07);
+      outline-offset: 3px;
+    }
+
     .wallpaper {
       --wallpaper-radius: 28px;
       position: relative;
@@ -260,7 +302,7 @@
 
     .meta {
       position: absolute;
-      right: 24px;
+      right: 66px;
       bottom: 22px;
       left: 24px;
       display: flex;
@@ -294,6 +336,47 @@
     }
     .meta a:hover,
     .meta button:hover { text-decoration-color: #fff; }
+
+    .regenerate {
+      position: absolute;
+      right: 14px;
+      bottom: 14px;
+      z-index: 4;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid rgb(255 255 255 / 20%);
+      border-radius: 50%;
+      background: rgb(255 255 255 / 92%);
+      color: #18191c;
+      box-shadow: 0 10px 32px rgb(0 0 0 / 28%);
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+      transition:
+        transform 300ms cubic-bezier(.2,.8,.2,1),
+        background-color 250ms ease,
+        opacity 250ms ease;
+    }
+
+    .regenerate svg {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }
+
+    .regenerate:hover { transform: translateY(-2px) rotate(-12deg); }
+    .regenerate:active { transform: scale(.92); }
+    .regenerate:disabled { opacity: .45; cursor: wait; }
+    .regenerate:focus-visible {
+      outline: 3px solid #fff;
+      outline-offset: 3px;
+    }
 
     .loader {
       position: absolute;
@@ -637,7 +720,20 @@
           <span class="polarity-track" aria-hidden="true"></span>
           <span>light</span>
         </label>
-        <button class="generate" type="button">generate</button>
+        <div class="generation-actions">
+          <button class="generate" type="button">generate</button>
+          <button
+            class="url-prompt"
+            type="button"
+            aria-label="generate from an image url"
+            title="generate from image url"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10.6 13.4a4 4 0 0 0 5.66 0l2.12-2.12a4 4 0 0 0-5.66-5.66l-1.21 1.21"></path>
+              <path d="M13.4 10.6a4 4 0 0 0-5.66 0l-2.12 2.12a4 4 0 0 0 5.66 5.66l1.21-1.21"></path>
+            </svg>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -655,6 +751,18 @@
               <button class="copy-hash" type="button">copy hash</button>
             </div>
           </div>
+          <button
+            class="regenerate"
+            type="button"
+            aria-label="regenerate this image palette"
+            title="regenerate with current polarity"
+            disabled
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 7v5h-5"></path>
+              <path d="M19 12a7 7 0 1 0-2.05 4.95"></path>
+            </svg>
+          </button>
         </section>
 
         <div class="palette-dock">
@@ -699,10 +807,13 @@
     const historyCount = document.querySelector(".history-count");
     const generate = document.querySelector(".generate");
     const polarityToggle = document.querySelector(".polarity-toggle");
+    const urlPrompt = document.querySelector(".url-prompt");
+    const regenerate = document.querySelector(".regenerate");
     const toast = document.querySelector(".toast");
     let toastTimer;
     let generationVersion = 0;
     let canSkip = false;
+    let currentRecordId = null;
 
     const playTitleSequence = () => {
       title.classList.remove("title-sequence");
@@ -757,6 +868,8 @@
     const setBusy = (active, label = "generating…", skippable = false) => {
       canSkip = skippable;
       generate.disabled = active && !skippable;
+      urlPrompt.disabled = active && !skippable;
+      regenerate.disabled = active || !currentRecordId;
       generate.textContent = active ? label : "generate again";
     };
 
@@ -785,10 +898,13 @@
 
       tags.textContent = data.tags.split(" ").slice(0, 14).join(" · ");
       source.href = data.post_url;
+      source.textContent = data.source_label || "view on konachan";
       copyImageUrl.dataset.value = data.image_url || "";
       copyImageUrl.hidden = !data.image_url;
       copyHash.dataset.value = data.sha256 || "";
       copyHash.hidden = !data.sha256;
+      currentRecordId = data.id;
+      regenerate.disabled = false;
       stage.classList.add("has-image");
 
       const previousImage = activeImage;
@@ -882,10 +998,30 @@
       }
     };
 
-    const generateWallpaper = async (skip = false) => {
+    const waitForGeneration = async (data, version) => {
+      const deadline = Date.now() + 300000;
+      let completed = data;
+      while (completed.status === "generating") {
+        if (version !== generationVersion) return null;
+        if (Date.now() > deadline) throw new Error("stylix generation timed out");
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        if (version !== generationVersion) return null;
+        const response = await fetch(`/api/generation/${encodeURIComponent(data.id)}`);
+        completed = await response.json();
+        if (!response.ok) {
+          throw new Error(completed.error || "could not read generation status");
+        }
+      }
+      if (completed.status === "error") {
+        throw new Error(completed.error || "stylix generation failed");
+      }
+      return completed;
+    };
+
+    const generateWallpaper = async (skip = false, imageUrl = "") => {
       const version = ++generationVersion;
       setBusy(true, skip ? "skipping…" : "fetching…");
-      setStageLoading(true, "fetching a wallpaper…");
+      setStageLoading(true, imageUrl ? "fetching your image…" : "fetching a wallpaper…");
       setPaletteGenerating(true);
 
       try {
@@ -894,7 +1030,12 @@
         });
         if (skip) parameters.set("skip", "1");
         const endpoint = `/api/generate?${parameters}`;
-        const response = await fetch(endpoint, { method: "POST" });
+        const options = { method: "POST" };
+        if (imageUrl) {
+          options.headers = { "Content-Type": "application/json" };
+          options.body = JSON.stringify({ image_url: imageUrl });
+        }
+        const response = await fetch(endpoint, options);
         const data = await response.json();
         if (version !== generationVersion) return;
         if (!response.ok) throw new Error(data.error || "generation failed");
@@ -905,20 +1046,8 @@
         setBusy(true, "skip?", true);
         setPaletteGenerating(true);
 
-        const deadline = Date.now() + 300000;
-        let completed = data;
-        while (completed.status === "generating") {
-          if (version !== generationVersion) return;
-          if (Date.now() > deadline) throw new Error("stylix generation timed out");
-          await new Promise((resolve) => setTimeout(resolve, 700));
-          if (version !== generationVersion) return;
-          const statusResponse = await fetch(`/api/generation/${encodeURIComponent(data.id)}`);
-          completed = await statusResponse.json();
-          if (!statusResponse.ok) throw new Error(completed.error || "could not read generation status");
-        }
-        if (completed.status === "error") {
-          throw new Error(completed.error || "stylix generation failed");
-        }
+        const completed = await waitForGeneration(data, version);
+        if (!completed) return;
 
         renderPalette(completed.palette);
         setPaletteGenerating(false);
@@ -936,7 +1065,56 @@
       }
     };
 
+    const regenerateCurrent = async () => {
+      if (!currentRecordId) {
+        notify("generate an image first");
+        return;
+      }
+      const version = ++generationVersion;
+      setBusy(true, "generating…");
+      setPaletteGenerating(true);
+      try {
+        const parameters = new URLSearchParams({
+          polarity: polarityToggle.checked ? "light" : "dark"
+        });
+        const response = await fetch(`/api/generate?${parameters}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ record_id: currentRecordId })
+        });
+        const data = await response.json();
+        if (version !== generationVersion) return;
+        if (!response.ok) throw new Error(data.error || "generation failed");
+        setBusy(true, "skip?", true);
+
+        const completed = await waitForGeneration(data, version);
+        if (!completed) return;
+        currentRecordId = completed.id;
+        renderPalette(completed.palette);
+        setPaletteGenerating(false);
+        await loadHistory();
+      } catch (error) {
+        if (version !== generationVersion) return;
+        setPaletteGenerating(false);
+        notify(error.message);
+      } finally {
+        if (version === generationVersion) setBusy(false);
+      }
+    };
+
     generate.addEventListener("click", () => generateWallpaper(canSkip));
+    urlPrompt.addEventListener("click", () => {
+      const value = prompt("paste a public https image url");
+      if (value === null) return;
+      try {
+        const imageUrl = new URL(value.trim());
+        if (imageUrl.protocol !== "https:") throw new Error();
+        generateWallpaper(canSkip, imageUrl.href);
+      } catch {
+        notify("please enter a valid https image url");
+      }
+    });
+    regenerate.addEventListener("click", regenerateCurrent);
     title.addEventListener("click", playTitleSequence);
     title.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {

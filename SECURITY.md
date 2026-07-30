@@ -15,8 +15,11 @@ The application enforces:
 - same-origin generation requests and an optional generation rate limit;
 - a single active Stylix process with a four-minute timeout;
 - HTTPS and host allowlisting for remote wallpaper downloads;
-- bounded API responses, image downloads, dimensions, history count, and disk
-  use;
+- DNS-pinned public-HTTPS validation for user-supplied image URLs, including
+  private, loopback, link-local, and reserved address blocking on every
+  redirect;
+- bounded API responses, image downloads, and image dimensions, with optional
+  history count and disk-retention limits;
 - JPEG, PNG, and WebP decoding and signature validation before processing;
 - atomic metadata writes, strict record IDs, and non-symlink file serving;
 - palette key/value validation;
