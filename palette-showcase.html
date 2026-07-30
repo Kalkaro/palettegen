@@ -190,7 +190,7 @@
     }
 
     .generate {
-      min-width: 150px;
+      min-width: 136px;
       border-radius: 999px;
       padding: 13px 19px;
       background: var(--base05);
@@ -211,10 +211,32 @@
 
     .generate:active { transform: scale(.97); }
     .generate:disabled { cursor: wait; opacity: .68; }
-    .generate:focus-visible, .swatch:focus-visible {
+    .generate:focus-visible, .upload-generate:focus-visible, .swatch:focus-visible {
       outline: 3px solid var(--base07);
       outline-offset: 3px;
     }
+
+    .generate-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .upload-generate {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--base04) 25%, transparent);
+      border-radius: 50%;
+      background: var(--base01);
+      color: var(--base05);
+      cursor: pointer;
+      transition: transform 250ms ease, background-color 700ms ease;
+    }
+
+    .upload-generate:hover { transform: translateY(-2px); }
+    .upload-generate:disabled { cursor: wait; opacity: .5; }
 
     .wallpaper {
       --wallpaper-radius: 28px;
@@ -232,6 +254,11 @@
       background: var(--base01);
       box-shadow: 0 24px 80px rgb(0 0 0 / 24%);
       transition: background-color 700ms ease;
+    }
+
+    .wallpaper.dragging {
+      outline: 3px dashed var(--base07);
+      outline-offset: 6px;
     }
 
     .wallpaper img {
@@ -260,7 +287,7 @@
 
     .meta {
       position: absolute;
-      right: 24px;
+      right: 66px;
       bottom: 22px;
       left: 24px;
       display: flex;
@@ -294,6 +321,47 @@
     }
     .meta a:hover,
     .meta button:hover { text-decoration-color: #fff; }
+
+    .url-generate {
+      position: absolute;
+      right: 14px;
+      bottom: 14px;
+      z-index: 4;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid rgb(255 255 255 / 20%);
+      border-radius: 50%;
+      background: rgb(255 255 255 / 92%);
+      color: #18191c;
+      box-shadow: 0 10px 32px rgb(0 0 0 / 28%);
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+      transition:
+        transform 300ms cubic-bezier(.2,.8,.2,1),
+        background-color 250ms ease,
+        opacity 250ms ease;
+    }
+
+    .url-generate svg {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }
+
+    .url-generate:hover { transform: translateY(-2px) rotate(-12deg); }
+    .url-generate:active { transform: scale(.92); }
+    .url-generate:disabled { opacity: .45; cursor: wait; }
+    .url-generate:focus-visible {
+      outline: 3px solid #fff;
+      outline-offset: 3px;
+    }
 
     .loader {
       position: absolute;
@@ -637,7 +705,11 @@
           <span class="polarity-track" aria-hidden="true"></span>
           <span>light</span>
         </label>
-        <button class="generate" type="button">generate</button>
+        <div class="generate-row">
+          <button class="generate" type="button">generate</button>
+          <button class="upload-generate" type="button" title="upload an image" aria-label="upload an image">↑</button>
+          <input class="image-file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+        </div>
       </div>
     </header>
 
@@ -655,6 +727,17 @@
               <button class="copy-hash" type="button">copy hash</button>
             </div>
           </div>
+          <button
+            class="url-generate"
+            type="button"
+            aria-label="generate a palette from an image url"
+            title="generate from image url"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 7v5h-5"></path>
+              <path d="M19 12a7 7 0 1 0-2.05 4.95"></path>
+            </svg>
+          </button>
         </section>
 
         <div class="palette-dock">
@@ -682,7 +765,7 @@
 
   <div class="toast" role="status"></div>
 
-  <script>
+  <script type="text/plain" id="legacy-server-client">
     const root = document.documentElement;
     const title = document.querySelector("h1");
     const stage = document.querySelector(".wallpaper");
@@ -699,6 +782,7 @@
     const historyCount = document.querySelector(".history-count");
     const generate = document.querySelector(".generate");
     const polarityToggle = document.querySelector(".polarity-toggle");
+    const urlGenerate = document.querySelector(".url-generate");
     const toast = document.querySelector(".toast");
     let toastTimer;
     let generationVersion = 0;
@@ -757,6 +841,7 @@
     const setBusy = (active, label = "generating…", skippable = false) => {
       canSkip = skippable;
       generate.disabled = active && !skippable;
+      urlGenerate.disabled = active && !skippable;
       generate.textContent = active ? label : "generate again";
     };
 
@@ -785,6 +870,7 @@
 
       tags.textContent = data.tags.split(" ").slice(0, 14).join(" · ");
       source.href = data.post_url;
+      source.textContent = data.source_label || "view on konachan";
       copyImageUrl.dataset.value = data.image_url || "";
       copyImageUrl.hidden = !data.image_url;
       copyHash.dataset.value = data.sha256 || "";
@@ -882,10 +968,10 @@
       }
     };
 
-    const generateWallpaper = async (skip = false) => {
+    const generateWallpaper = async (skip = false, imageUrl = "") => {
       const version = ++generationVersion;
       setBusy(true, skip ? "skipping…" : "fetching…");
-      setStageLoading(true, "fetching a wallpaper…");
+      setStageLoading(true, imageUrl ? "fetching your image…" : "fetching a wallpaper…");
       setPaletteGenerating(true);
 
       try {
@@ -894,7 +980,12 @@
         });
         if (skip) parameters.set("skip", "1");
         const endpoint = `/api/generate?${parameters}`;
-        const response = await fetch(endpoint, { method: "POST" });
+        const options = { method: "POST" };
+        if (imageUrl) {
+          options.headers = { "Content-Type": "application/json" };
+          options.body = JSON.stringify({ image_url: imageUrl });
+        }
+        const response = await fetch(endpoint, options);
         const data = await response.json();
         if (version !== generationVersion) return;
         if (!response.ok) throw new Error(data.error || "generation failed");
@@ -937,6 +1028,17 @@
     };
 
     generate.addEventListener("click", () => generateWallpaper(canSkip));
+    urlGenerate.addEventListener("click", () => {
+      const value = prompt("paste a public https image url");
+      if (value === null) return;
+      try {
+        const imageUrl = new URL(value.trim());
+        if (imageUrl.protocol !== "https:") throw new Error();
+        generateWallpaper(canSkip, imageUrl.href);
+      } catch {
+        notify("please enter a valid https image url");
+      }
+    });
     title.addEventListener("click", playTitleSequence);
     title.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -955,5 +1057,6 @@
     addEventListener("resize", sizeHistoryToFive);
     loadHistory();
   </script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

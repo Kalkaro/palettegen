@@ -1,0 +1,10 @@
+palette_server.py
+requirements.txt
+.env
+.env.example
+SECURITY.md
+__pycache__
+palette-history
+browser-wallpaper
+browser-palette.json
+.git

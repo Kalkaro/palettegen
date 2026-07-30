@@ -11,8 +11,10 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import signal
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -24,9 +26,10 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlunsplit
 
 from PIL import Image, UnidentifiedImageError
+from urllib3 import HTTPSConnectionPool, Timeout
 
 
 ROOT = Path(__file__).resolve().parent
@@ -139,6 +142,98 @@ def download_limited(url: str, destination: Path) -> str:
     return validate_image(destination)
 
 
+def resolve_public_https_url(url: object) -> tuple[str, str, list[str]]:
+    if not isinstance(url, str) or not 1 <= len(url) <= 2048:
+        raise ValueError("Invalid image URL")
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+    ):
+        raise ValueError("Image URL must use public HTTPS")
+    hostname = parsed.hostname.rstrip(".").encode("idna").decode("ascii")
+    try:
+        addresses = {
+            result[4][0].split("%", 1)[0]
+            for result in socket.getaddrinfo(
+                hostname, 443, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
+            )
+        }
+    except socket.gaierror as error:
+        raise ValueError("Image hostname could not be resolved") from error
+    if not addresses or any(
+        not ipaddress.ip_address(address).is_global for address in addresses
+    ):
+        raise ValueError("Private or reserved image addresses are not allowed")
+    target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    return hostname, target, sorted(addresses)
+
+
+def download_public_image(url: str, destination: Path) -> tuple[str, str]:
+    current_url = url
+    for redirect_count in range(4):
+        hostname, target, addresses = resolve_public_https_url(current_url)
+        last_error: Exception | None = None
+        response = None
+        pool = None
+        for address in addresses:
+            try:
+                pool = HTTPSConnectionPool(
+                    address,
+                    port=443,
+                    timeout=Timeout(connect=10, read=60),
+                    retries=False,
+                    cert_reqs="CERT_REQUIRED",
+                    assert_hostname=hostname,
+                    server_hostname=hostname,
+                )
+                response = pool.request(
+                    "GET",
+                    target,
+                    headers={"Host": hostname, "User-Agent": USER_AGENT},
+                    preload_content=False,
+                    redirect=False,
+                )
+                break
+            except Exception as error:
+                last_error = error
+                if pool is not None:
+                    pool.close()
+        if response is None or pool is None:
+            raise ValueError("Image host could not be reached") from last_error
+
+        try:
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location")
+                if not location or redirect_count == 3:
+                    raise ValueError("Image URL redirected too many times")
+                current_url = urljoin(current_url, location)
+                continue
+            if response.status != HTTPStatus.OK:
+                raise ValueError(f"Image server returned HTTP {response.status}")
+            declared = response.headers.get("Content-Length")
+            if declared and int(declared) > MAX_IMAGE_BYTES:
+                raise ValueError("Image exceeds the download limit")
+            size = 0
+            with destination.open("wb") as output:
+                os.chmod(destination, 0o600)
+                for chunk in response.stream(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_IMAGE_BYTES:
+                        raise ValueError("Image exceeds the download limit")
+                    output.write(chunk)
+            if size == 0:
+                raise ValueError("Image download was empty")
+            return validate_image(destination), current_url
+        finally:
+            response.release_conn()
+            pool.close()
+    raise ValueError("Image URL redirected too many times")
+
+
 def validate_image(path: Path) -> str:
     try:
         with warnings.catch_warnings():
@@ -237,29 +332,48 @@ def validate_runtime() -> None:
         )
 
 
-def start_generation(polarity: str = "dark") -> dict[str, object]:
+def start_generation(
+    polarity: str = "dark",
+    supplied_image_url: str | None = None,
+) -> dict[str, object]:
     global active_job
 
     if polarity not in {"dark", "light"}:
         raise ValueError("Invalid palette polarity")
     validate_runtime()
 
-    with request(API_URL, 30) as response:
-        posts = read_limited_json(response)
-    if not isinstance(posts, list) or not posts or not isinstance(posts[0], dict):
-        raise ValueError("Wallpaper provider returned an invalid response")
+    if supplied_image_url is None:
+        with request(API_URL, 30) as response:
+            posts = read_limited_json(response)
+        if not isinstance(posts, list) or not posts or not isinstance(posts[0], dict):
+            raise ValueError("Wallpaper provider returned an invalid response")
 
-    post = posts[0]
-    post_id = post.get("id")
-    if not isinstance(post_id, int) or post_id <= 0:
-        raise ValueError("Wallpaper provider returned an invalid post ID")
-    image_url = validate_remote_url(post.get("file_url"))
+        post = posts[0]
+        post_id = post.get("id")
+        if not isinstance(post_id, int) or post_id <= 0:
+            raise ValueError("Wallpaper provider returned an invalid post ID")
+        image_url = validate_remote_url(post.get("file_url"))
+        tags = str(post.get("tags", ""))[:4096]
+        post_url = f"https://konachan.net/post/show/{post_id}"
+        source_label = "view on konachan"
+    else:
+        post_id = secrets.randbelow(1_000_000_000)
+        image_url = supplied_image_url
+        tags = "custom image"
+        post_url = supplied_image_url
+        source_label = "open image source"
 
     descriptor, temporary_name = tempfile.mkstemp(dir=ROOT, prefix=".wallpaper-")
     os.close(descriptor)
     temporary_wallpaper = Path(temporary_name)
     try:
-        content_type = download_limited(image_url, temporary_wallpaper)
+        if supplied_image_url is None:
+            content_type = download_limited(image_url, temporary_wallpaper)
+        else:
+            content_type, image_url = download_public_image(
+                image_url, temporary_wallpaper
+            )
+            post_url = image_url
     except Exception:
         temporary_wallpaper.unlink(missing_ok=True)
         raise
@@ -274,8 +388,9 @@ def start_generation(polarity: str = "dark") -> dict[str, object]:
     metadata = {
         "id": record_id,
         "image": f"/history/{record_id}/wallpaper",
-        "tags": str(post.get("tags", ""))[:4096],
-        "post_url": f"https://konachan.net/post/show/{post_id}",
+        "tags": tags,
+        "post_url": post_url,
+        "source_label": source_label,
         "image_url": image_url,
         "sha256": nix_sha256(record_dir / "wallpaper"),
         "created_at": created_at.isoformat(),
@@ -673,9 +788,41 @@ class Handler(BaseHTTPRequestHandler):
         if not self.same_origin():
             self.send_json({"error": "Cross-origin request denied"}, HTTPStatus.FORBIDDEN)
             return
-        if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Length", "0") != "0":
-            self.send_json({"error": "Request body is not allowed"}, HTTPStatus.BAD_REQUEST)
+        if self.headers.get("Transfer-Encoding"):
+            self.send_json({"error": "Chunked request bodies are not allowed"}, HTTPStatus.BAD_REQUEST)
             return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_json({"error": "Invalid content length"}, HTTPStatus.BAD_REQUEST)
+            return
+        if not 0 <= content_length <= 4096:
+            self.send_json({"error": "Request body is too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        supplied_image_url = None
+        if content_length:
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip()
+            if content_type != "application/json":
+                self.send_json({"error": "Expected application/json"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            try:
+                payload = json.loads(self.rfile.read(content_length))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self.send_json({"error": "Invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+                return
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"image_url"}
+                or not isinstance(payload["image_url"], str)
+            ):
+                self.send_json({"error": "Expected one image_url string"}, HTTPStatus.BAD_REQUEST)
+                return
+            supplied_image_url = payload["image_url"].strip()
+            try:
+                resolve_public_https_url(supplied_image_url)
+            except ValueError:
+                self.send_json({"error": "Image URL must be public HTTPS"}, HTTPStatus.BAD_REQUEST)
+                return
         allowed, retry_after = request_allowed(self.client_key())
         if not allowed:
             self.send_bytes(
@@ -701,7 +848,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "A palette is already being generated"}, 409)
             return
         try:
-            self.send_json(start_generation(polarity), 202)
+            self.send_json(start_generation(polarity, supplied_image_url), 202)
         except Exception as error:
             generation_lock.release()
             print(f"[palette] request failed: {type(error).__name__}: {error}")
