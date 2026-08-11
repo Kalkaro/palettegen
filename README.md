@@ -7,5 +7,5 @@ Run it with:
 ```sh
 nix run path:.
 
-Connect to it: localhost:8766
 ```
+Connect to it: localhost:8766
