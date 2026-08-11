@@ -5,7 +5,7 @@ A local web app that fetches safe Konachan wallpapers and generates Base16 color
 Run it with:
 
 ```sh
-nix run path:.
+nix run github:Kalkaro/palettegen
 
 ```
 Connect to it: localhost:8766
