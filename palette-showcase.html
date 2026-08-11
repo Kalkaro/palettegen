@@ -1005,10 +1005,14 @@
     };
 
     const loadHistory = async () => {
+      const version = generationVersion;
       try {
         const response = await fetch("/api/history");
         const data = await response.json();
         renderHistory(data.history);
+        if (!currentRecordId && version === generationVersion && data.history.length) {
+          await displayRecord(data.history[0]);
+        }
       } catch {
         historyCount.textContent = "unavailable";
       }

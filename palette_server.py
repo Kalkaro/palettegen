@@ -34,19 +34,30 @@ from urllib3 import HTTPSConnectionPool, Timeout
 
 ROOT = Path(__file__).resolve().parent
 HTML = ROOT / "palette-showcase.html"
-HISTORY = ROOT / "palette-history"
+DATA_DIR_CONFIG = os.environ.get("PALETTE_DATA_DIR", "").strip()
+DATA_DIR = (
+    Path(DATA_DIR_CONFIG).expanduser().resolve() if DATA_DIR_CONFIG else ROOT
+)
+HISTORY_CONFIG = os.environ.get("PALETTE_HISTORY_DIR", "").strip()
+HISTORY = (
+    Path(HISTORY_CONFIG).expanduser().resolve()
+    if HISTORY_CONFIG
+    else DATA_DIR / "palette-history"
+)
 API_URL = "https://konachan.net/post.json?tags=order:random+rating:safe&limit=1"
 USER_AGENT = "Mozilla/5.0 (Linux; Stylix palette showcase)"
-NIX_PORTABLE = Path(
-    os.environ.get("PALETTE_NIX_PORTABLE", "/tmp/nix-portable-x86_64")
-).resolve()
+NIX_PORTABLE_CONFIG = os.environ.get("PALETTE_NIX_PORTABLE", "").strip()
+NIX_PORTABLE = (
+    Path(NIX_PORTABLE_CONFIG).expanduser().resolve() if NIX_PORTABLE_CONFIG else None
+)
+NIX_COMMAND = os.environ.get("PALETTE_NIX", "").strip()
 GENERATOR_FLAKE = os.environ.get(
     "PALETTE_GENERATOR_FLAKE",
     "github:nix-community/stylix/66714e5ce44269ecc58c20d9196da8dbe1b27a31"
     "#palette-generator",
 )
 HOST = os.environ.get("PALETTE_HOST", "127.0.0.1")
-PORT = int(os.environ.get("PALETTE_PORT", "8765"))
+PORT = int(os.environ.get("PALETTE_PORT", "8766"))
 PUBLIC_MODE = os.environ.get("PALETTE_PUBLIC", "").lower() in {"1", "true", "yes"}
 AUTH_USERNAME = os.environ.get("PALETTE_USERNAME", "palette")
 AUTH_PASSWORD = os.environ.get("PALETTE_PASSWORD", "")
@@ -114,7 +125,9 @@ def request(url: str, timeout: int) -> urllib.request.addinfourl:
     )
 
 
-def read_limited_json(response: urllib.request.addinfourl, limit: int = 1024 * 1024) -> object:
+def read_limited_json(
+    response: urllib.request.addinfourl, limit: int = 1024 * 1024
+) -> object:
     declared = response.headers.get("Content-Length")
     if declared and int(declared) > limit:
         raise ValueError("Remote API response is too large")
@@ -245,7 +258,9 @@ def validate_image(path: Path) -> str:
                 if image_format not in IMAGE_TYPES:
                     raise ValueError("Wallpaper format is not allowed")
                 if width < 320 or height < 200 or width * height > MAX_IMAGE_PIXELS:
-                    raise ValueError("Wallpaper dimensions are outside the allowed range")
+                    raise ValueError(
+                        "Wallpaper dimensions are outside the allowed range"
+                    )
                 if frames != 1:
                     raise ValueError("Animated wallpapers are not allowed")
                 image.verify()
@@ -295,13 +310,12 @@ def public_record(record: dict[str, object]) -> dict[str, object]:
 
 
 def prune_history() -> None:
-    if (
-        not HISTORY.is_dir()
-        or (MAX_HISTORY_ITEMS <= 0 and MAX_HISTORY_BYTES <= 0)
-    ):
+    if not HISTORY.is_dir() or (MAX_HISTORY_ITEMS <= 0 and MAX_HISTORY_BYTES <= 0):
         return
     candidates: list[tuple[Path, int]] = []
-    for directory in sorted(HISTORY.iterdir(), key=lambda item: item.name, reverse=True):
+    for directory in sorted(
+        HISTORY.iterdir(), key=lambda item: item.name, reverse=True
+    ):
         if not directory.is_dir() or not RECORD_ID.fullmatch(directory.name):
             continue
         size = sum(
@@ -314,9 +328,8 @@ def prune_history() -> None:
     retained_count = 0
     retained_size = 0
     for directory, size in candidates:
-        if (
-            (MAX_HISTORY_ITEMS <= 0 or retained_count < MAX_HISTORY_ITEMS)
-            and (MAX_HISTORY_BYTES <= 0 or retained_size + size <= MAX_HISTORY_BYTES)
+        if (MAX_HISTORY_ITEMS <= 0 or retained_count < MAX_HISTORY_ITEMS) and (
+            MAX_HISTORY_BYTES <= 0 or retained_size + size <= MAX_HISTORY_BYTES
         ):
             retained_count += 1
             retained_size += size
@@ -324,15 +337,62 @@ def prune_history() -> None:
         shutil.rmtree(directory)
 
 
+def nix_runner() -> tuple[list[str], dict[str, str]]:
+    if NIX_PORTABLE is not None:
+        if not NIX_PORTABLE.is_file() or NIX_PORTABLE.is_symlink():
+            raise RuntimeError("The configured Stylix runtime is missing or unsafe")
+        runtime_stat = NIX_PORTABLE.stat()
+        if runtime_stat.st_uid != os.geteuid() or runtime_stat.st_mode & 0o022:
+            raise RuntimeError(
+                "The Stylix runtime must be owned by the service user and not "
+                "writable by group or others"
+            )
+        git = shutil.which("git") or "/usr/bin/git"
+        return [str(NIX_PORTABLE), "nix"], {"NP_RUNTIME": "proot", "NP_GIT": git}
+
+    nix_command = NIX_COMMAND or "nix"
+    nix_path = Path(nix_command).expanduser()
+    if not nix_path.is_absolute():
+        located = shutil.which(nix_command)
+        if located is None:
+            raise RuntimeError(
+                "Nix is required for Stylix palette generation. Install Nix or set "
+                "PALETTE_NIX_PORTABLE to a nix-portable binary."
+            )
+        nix_path = Path(located)
+    try:
+        resolved = nix_path.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError("The configured Nix command is missing") from error
+    if not resolved.is_file():
+        raise RuntimeError("The configured Nix command is not a file")
+    return [str(resolved)], {}
+
+
+def stylix_command(
+    polarity: str,
+    wallpaper: Path,
+    output: Path,
+) -> tuple[list[str], dict[str, str]]:
+    runner, environment = nix_runner()
+    return (
+        runner
+        + [
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "run",
+            GENERATOR_FLAKE,
+            "--",
+            polarity,
+            str(wallpaper),
+            str(output),
+        ],
+        environment,
+    )
+
+
 def validate_runtime() -> None:
-    if not NIX_PORTABLE.is_file() or NIX_PORTABLE.is_symlink():
-        raise RuntimeError("The configured Stylix runtime is missing or unsafe")
-    runtime_stat = NIX_PORTABLE.stat()
-    if runtime_stat.st_uid != os.geteuid() or runtime_stat.st_mode & 0o022:
-        raise RuntimeError(
-            "The Stylix runtime must be owned by the service user and not writable "
-            "by group or others"
-        )
+    nix_runner()
 
 
 def start_generation(
@@ -366,7 +426,8 @@ def start_generation(
         post_url = supplied_image_url
         source_label = "open image source"
 
-    descriptor, temporary_name = tempfile.mkstemp(dir=ROOT, prefix=".wallpaper-")
+    HISTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, temporary_name = tempfile.mkstemp(dir=HISTORY, prefix=".wallpaper-")
     os.close(descriptor)
     temporary_wallpaper = Path(temporary_name)
     try:
@@ -441,8 +502,7 @@ def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
 
     created_at = datetime.now(timezone.utc)
     new_id = (
-        f"{created_at.strftime('%Y%m%dT%H%M%S%fZ')}-"
-        f"{secrets.randbelow(1_000_000_000)}"
+        f"{created_at.strftime('%Y%m%dT%H%M%S%fZ')}-{secrets.randbelow(1_000_000_000)}"
     )
     record_dir = HISTORY / new_id
     record_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -503,25 +563,20 @@ def finish_generation(job: dict[str, object]) -> None:
         for key, value in os.environ.items()
         if not key.startswith("PALETTE_")
     }
-    environment.update({"NP_RUNTIME": "proot", "NP_GIT": "/usr/bin/git"})
-    command = [
-        str(NIX_PORTABLE),
-        "nix",
-        "run",
-        GENERATOR_FLAKE,
-        "--",
-        str(job["polarity"]),
-        str(record_dir / "wallpaper"),
-        str(temporary_palette),
-    ]
 
     try:
+        command, runtime_environment = stylix_command(
+            str(job["polarity"]),
+            record_dir / "wallpaper",
+            temporary_palette,
+        )
+        environment.update(runtime_environment)
         if cancel.is_set():
             raise InterruptedError("Palette generation skipped")
 
         process = subprocess.Popen(
             command,
-            cwd=ROOT,
+            cwd=DATA_DIR,
             env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -537,7 +592,9 @@ def finish_generation(job: dict[str, object]) -> None:
         if cancel.is_set():
             raise InterruptedError("Palette generation skipped")
         if process.returncode:
-            raise RuntimeError(stderr.strip() or stdout.strip() or "Stylix generation failed")
+            raise RuntimeError(
+                stderr.strip() or stdout.strip() or "Stylix generation failed"
+            )
 
         if temporary_palette.stat().st_size > 64 * 1024:
             raise RuntimeError("Stylix returned an oversized palette")
@@ -545,7 +602,10 @@ def finish_generation(job: dict[str, object]) -> None:
         if (
             not isinstance(palette, dict)
             or set(palette) != {f"base{i:02X}" for i in range(16)}
-            or not all(isinstance(value, str) and HEX_COLOR.fullmatch(value) for value in palette.values())
+            or not all(
+                isinstance(value, str) and HEX_COLOR.fullmatch(value)
+                for value in palette.values()
+            )
         ):
             raise RuntimeError("Stylix returned an incomplete palette")
         os.replace(temporary_palette, record_dir / "palette.json")
@@ -563,11 +623,17 @@ def finish_generation(job: dict[str, object]) -> None:
         atomic_write_json(metadata_file, metadata)
     except Exception as error:
         temporary_palette.unlink(missing_ok=True)
-        print(f"[palette] generation {record_id} failed: {type(error).__name__}: {error}")
+        print(
+            f"[palette] generation {record_id} failed: {type(error).__name__}: {error}"
+        )
         try:
             metadata = load_record(metadata_file)
             status = "skipped" if cancel.is_set() else "error"
-            message = "Palette generation skipped" if status == "skipped" else "Palette generation failed"
+            message = (
+                "Palette generation skipped"
+                if status == "skipped"
+                else "Palette generation failed"
+            )
             metadata.update({"status": status, "error": message})
             atomic_write_json(metadata_file, metadata)
         except (OSError, ValueError):
@@ -629,7 +695,11 @@ def history() -> list[dict[str, object]]:
                 continue
             wallpaper = metadata_file.parent / "wallpaper"
             changed = False
-            if wallpaper.is_file() and not wallpaper.is_symlink() and not record.get("sha256"):
+            if (
+                wallpaper.is_file()
+                and not wallpaper.is_symlink()
+                and not record.get("sha256")
+            ):
                 record["sha256"] = nix_sha256(wallpaper)
                 changed = True
             if changed:
@@ -679,7 +749,10 @@ def within_limit(
         timestamps.append(now)
         if len(buckets) > 2048:
             for stale_key in list(buckets):
-                if not buckets[stale_key] or buckets[stale_key][-1] <= now - RATE_LIMIT_WINDOW:
+                if (
+                    not buckets[stale_key]
+                    or buckets[stale_key][-1] <= now - RATE_LIMIT_WINDOW
+                ):
                     del buckets[stale_key]
         return True, 0
 
@@ -742,7 +815,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(size))
-        self.send_header("Cache-Control", "private, max-age=86400")
+        # History paths contain a unique record ID and their wallpaper never changes.
+        self.send_header("Cache-Control", "private, max-age=31536000, immutable")
         self.end_headers()
         try:
             with path.open("rb") as source:
@@ -858,10 +932,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         if not self.same_origin():
-            self.send_json({"error": "Cross-origin request denied"}, HTTPStatus.FORBIDDEN)
+            self.send_json(
+                {"error": "Cross-origin request denied"}, HTTPStatus.FORBIDDEN
+            )
             return
         if self.headers.get("Transfer-Encoding"):
-            self.send_json({"error": "Chunked request bodies are not allowed"}, HTTPStatus.BAD_REQUEST)
+            self.send_json(
+                {"error": "Chunked request bodies are not allowed"},
+                HTTPStatus.BAD_REQUEST,
+            )
             return
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -869,14 +948,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Invalid content length"}, HTTPStatus.BAD_REQUEST)
             return
         if not 0 <= content_length <= 4096:
-            self.send_json({"error": "Request body is too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            self.send_json(
+                {"error": "Request body is too large"},
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
             return
         supplied_image_url = None
         source_record_id = None
         if content_length:
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip()
             if content_type != "application/json":
-                self.send_json({"error": "Expected application/json"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                self.send_json(
+                    {"error": "Expected application/json"},
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                )
                 return
             try:
                 payload = json.loads(self.rfile.read(content_length))
@@ -884,19 +969,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Invalid JSON body"}, HTTPStatus.BAD_REQUEST)
                 return
             if not isinstance(payload, dict):
-                self.send_json({"error": "Expected a JSON object"}, HTTPStatus.BAD_REQUEST)
+                self.send_json(
+                    {"error": "Expected a JSON object"}, HTTPStatus.BAD_REQUEST
+                )
                 return
             if set(payload) == {"image_url"} and isinstance(payload["image_url"], str):
                 supplied_image_url = payload["image_url"].strip()
                 try:
                     resolve_public_https_url(supplied_image_url)
                 except ValueError:
-                    self.send_json({"error": "Image URL must be public HTTPS"}, HTTPStatus.BAD_REQUEST)
+                    self.send_json(
+                        {"error": "Image URL must be public HTTPS"},
+                        HTTPStatus.BAD_REQUEST,
+                    )
                     return
-            elif set(payload) == {"record_id"} and isinstance(payload["record_id"], str):
+            elif set(payload) == {"record_id"} and isinstance(
+                payload["record_id"], str
+            ):
                 source_record_id = payload["record_id"]
                 if generation_status(source_record_id) is None:
-                    self.send_json({"error": "Wallpaper record was not found"}, HTTPStatus.NOT_FOUND)
+                    self.send_json(
+                        {"error": "Wallpaper record was not found"},
+                        HTTPStatus.NOT_FOUND,
+                    )
                     return
             else:
                 self.send_json(
@@ -916,7 +1011,9 @@ class Handler(BaseHTTPRequestHandler):
         parameters = parse_qs(parsed.query)
         polarity_values = parameters.get("polarity", ["dark"])
         if len(polarity_values) != 1 or polarity_values[0] not in {"dark", "light"}:
-            self.send_json({"error": "Invalid palette polarity"}, HTTPStatus.BAD_REQUEST)
+            self.send_json(
+                {"error": "Invalid palette polarity"}, HTTPStatus.BAD_REQUEST
+            )
             return
         polarity = polarity_values[0]
         should_skip = parameters.get("skip") == ["1"]
@@ -980,6 +1077,7 @@ if __name__ == "__main__":
         raise SystemExit(
             "A non-loopback PALETTE_HOST requires a PALETTE_PASSWORD of at least 16 characters"
         )
+    DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     HISTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
     validate_runtime()
     prune_history()

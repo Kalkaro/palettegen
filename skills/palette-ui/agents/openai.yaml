@@ -1,0 +1,4 @@
+interface:
+  display_name: "Palette UI"
+  short_description: "Build interfaces in the palette generator style"
+  default_prompt: "Use $palette-ui to design a responsive interface matching this repository’s palette generator UI."

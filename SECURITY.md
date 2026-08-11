@@ -30,7 +30,9 @@ The application enforces:
 Production checklist:
 
 1. Run as a dedicated unprivileged service account.
-2. Install `nix-portable` outside `/tmp`, owned by that account and mode `700`.
+2. Use a trusted Nix runtime. A normal system `nix` command is used
+   automatically; for `nix-portable`, install it outside `/tmp`, owned by that
+   account and mode `700`, and set `PALETTE_NIX_PORTABLE`.
 3. Put the application behind Caddy with automatic HTTPS.
 4. Allow inbound ports 80 and 443 only; keep 8765 private.
 5. Back up `palette-history` if the history matters.
