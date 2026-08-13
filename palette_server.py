@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urljoin, urlparse, urlunsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunsplit
 
 from PIL import Image, UnidentifiedImageError
 from urllib3 import HTTPSConnectionPool, Timeout
@@ -44,7 +44,17 @@ HISTORY = (
     if HISTORY_CONFIG
     else DATA_DIR / "palette-history"
 )
-API_URL = "https://konachan.net/post.json?tags=order:random+rating:safe&limit=1"
+MIN_WALLPAPER_WIDTH = 2560
+MIN_WALLPAPER_HEIGHT = 1440
+API_URL = "https://konachan.net/post.json?" + urlencode(
+    {
+        "tags": (
+            "order:random rating:safe "
+            f"width:>={MIN_WALLPAPER_WIDTH} height:>={MIN_WALLPAPER_HEIGHT}"
+        ),
+        "limit": 1,
+    }
+)
 USER_AGENT = "Mozilla/5.0 (Linux; Stylix palette showcase)"
 NIX_PORTABLE_CONFIG = os.environ.get("PALETTE_NIX_PORTABLE", "").strip()
 NIX_PORTABLE = (

@@ -5,6 +5,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,16 @@ def load_server(env: dict[str, str]):
 
 
 class PaletteServerRuntimeTests(unittest.TestCase):
+    def test_wallpaper_request_requires_2560_by_1440_or_larger(self):
+        server = load_server({})
+        parameters = parse_qs(urlparse(server.API_URL).query)
+
+        self.assertEqual(parameters["limit"], ["1"])
+        self.assertEqual(
+            parameters["tags"],
+            ["order:random rating:safe width:>=2560 height:>=1440"],
+        )
+
     def test_data_dir_controls_default_history_location(self):
         with tempfile.TemporaryDirectory() as directory:
             server = load_server({"PALETTE_DATA_DIR": directory})
