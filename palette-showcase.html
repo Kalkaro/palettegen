@@ -601,9 +601,23 @@
     }
 
     .history-card.is-generating:hover,
-    .history-card.is-generating:active {
+    .history-card.is-generating:active,
+    .history-card.is-placeholder:hover,
+    .history-card.is-placeholder:active {
       border-radius: 15px;
       transform: none;
+    }
+
+    .history-card.is-placeholder {
+      background: color-mix(in srgb, var(--base02) 72%, var(--base01));
+    }
+
+    .history-card.is-placeholder::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: color-mix(in srgb, var(--base04) 9%, transparent);
+      animation: placeholder-pulse 1200ms ease-in-out infinite alternate;
     }
 
     .history-card img {
@@ -620,11 +634,14 @@
     .history-card:hover img { transform: scale(1.055); filter: saturate(1.08); }
 
     .history-card.is-generating img,
-    .history-card.is-generating:hover img {
+    .history-card.is-generating:hover img,
+    .history-card.is-placeholder img {
       opacity: .58;
       filter: brightness(.62) saturate(.72);
       transform: none;
     }
+
+    .history-card.is-placeholder img { opacity: 0; }
 
     .history-timestamp {
       position: absolute;
@@ -645,6 +662,7 @@
     .history-progress {
       position: absolute;
       inset: 0;
+      z-index: 1;
       display: grid;
       place-content: center;
       justify-items: center;
@@ -698,6 +716,7 @@
     @keyframes swatch-in { to { opacity: 1; transform: none; } }
     @keyframes swatch-fade { to { opacity: 1; } }
     @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes placeholder-pulse { to { opacity: .38; } }
     @keyframes prefix-sequence {
       0%, 100% {
         max-width: 0;
@@ -1030,7 +1049,7 @@
       card.append(thumbnail, timestamp);
       card.addEventListener("click", async () => {
         const selected = card.historyRecord;
-        if (!selected || selected.status === "generating") return;
+        if (!selected || selected.status !== "ready") return;
         try {
           await displayRecord(selected);
           window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1043,6 +1062,8 @@
 
     const updateHistoryCard = (card, record) => {
       const isGenerating = record.status === "generating";
+      const isPlaceholder = record.status === "fetching";
+      const isPending = isGenerating || isPlaceholder;
       const date = new Date(record.created_at);
       const label = new Intl.DateTimeFormat(undefined, {
         dateStyle: "medium",
@@ -1050,18 +1071,27 @@
       }).format(date).toLowerCase();
       card.historyRecord = record;
       card.classList.toggle("is-generating", isGenerating);
-      card.disabled = isGenerating;
-      card.title = isGenerating ? "generating palette" : record.tags;
+      card.classList.toggle("is-placeholder", isPlaceholder);
+      card.disabled = isPending;
+      card.title = isPlaceholder
+        ? "fetching wallpaper"
+        : isGenerating ? "generating palette" : record.tags;
       card.setAttribute(
         "aria-label",
-        isGenerating ? "palette generation in progress" : `open generation from ${label}`
+        isPlaceholder
+          ? "wallpaper fetch in progress"
+          : isGenerating ? "palette generation in progress" : `open generation from ${label}`
       );
       const thumbnail = card.querySelector("img");
-      if (thumbnail.getAttribute("src") !== record.image) thumbnail.src = record.image;
+      if (record.image && thumbnail.getAttribute("src") !== record.image) {
+        thumbnail.src = record.image;
+      } else if (!record.image) {
+        thumbnail.removeAttribute("src");
+      }
       card.querySelector(".history-timestamp").textContent = label;
 
       let progress = card.querySelector(".history-progress");
-      if (isGenerating && !progress) {
+      if (isPending && !progress) {
         progress = document.createElement("span");
         progress.className = "history-progress";
         const spinner = document.createElement("span");
@@ -1070,19 +1100,70 @@
         progressLabel.textContent = "generating…";
         progress.append(spinner, progressLabel);
         card.append(progress);
-      } else if (!isGenerating) {
+      } else if (!isPending) {
         progress?.remove();
+      }
+      if (progress) {
+        progress.lastElementChild.textContent = isPlaceholder
+          ? "fetching wallpaper…"
+          : "generating…";
       }
     };
 
+    const addHistoryPlaceholder = () => {
+      historyList.querySelector(".history-empty")?.remove();
+      const placeholder = {
+        id: `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        status: "fetching",
+        created_at: new Date().toISOString(),
+        image: "",
+        tags: ""
+      };
+      const card = createHistoryCard(placeholder, 0);
+      updateHistoryCard(card, placeholder);
+      historyList.prepend(card);
+      const count = historyList.querySelectorAll(".history-card").length;
+      historyCount.textContent = `${count} generation${count === 1 ? "" : "s"}`;
+      requestAnimationFrame(sizeHistoryToFive);
+      return card;
+    };
+
+    const adoptHistoryPlaceholder = (card, record) => {
+      card.dataset.recordId = record.id;
+      updateHistoryCard(card, record);
+    };
+
     const renderHistory = (records) => {
-      historyCount.textContent = `${records.length} generation${records.length === 1 ? "" : "s"}`;
-      activeGenerationCount = records.filter((record) => record.status === "generating").length;
+      const currentCards = [...historyList.querySelectorAll(".history-card")];
+      const knownIds = new Set(
+        currentCards
+          .filter((card) => !card.classList.contains("is-placeholder"))
+          .map((card) => card.dataset.recordId)
+      );
+      const newGeneratingRecords = records.filter(
+        (record) => record.status === "generating" && !knownIds.has(record.id)
+      );
+      currentCards
+        .filter((card) => card.classList.contains("is-placeholder"))
+        .forEach((card, index) => {
+          if (newGeneratingRecords[index]) {
+            adoptHistoryPlaceholder(card, newGeneratingRecords[index]);
+          }
+        });
+
+      const placeholderCount = historyList.querySelectorAll(".is-placeholder").length;
+      const displayedCount = records.length + placeholderCount;
+      historyCount.textContent = `${displayedCount} generation${displayedCount === 1 ? "" : "s"}`;
+      activeGenerationCount = records.filter((record) => record.status === "generating").length +
+        placeholderCount;
       updateContinueAvailability();
 
       if (!records.length) {
-        historyList.querySelectorAll(".history-card").forEach((card) => card.remove());
-        if (!historyList.querySelector(".history-empty")) {
+        historyList.querySelectorAll(".history-card:not(.is-placeholder)")
+          .forEach((card) => card.remove());
+        const placeholders = historyList.querySelectorAll(".is-placeholder").length;
+        historyCount.textContent = `${placeholders} generation${placeholders === 1 ? "" : "s"}`;
+        if (!placeholders && !historyList.querySelector(".history-empty")) {
           const empty = document.createElement("p");
           empty.className = "history-empty";
           empty.textContent = "generated wallpapers will stay here.";
@@ -1103,12 +1184,14 @@
       records.forEach((record, index) => {
         const card = existingCards.get(record.id) || createHistoryCard(record, index);
         updateHistoryCard(card, record);
-        const cardAtIndex = historyList.children[index];
+        const cardAtIndex = historyList.children[index + placeholderCount];
         if (cardAtIndex !== card) historyList.insertBefore(card, cardAtIndex || null);
       });
 
       existingCards.forEach((card, recordId) => {
-        if (!liveIds.has(recordId)) card.remove();
+        if (!liveIds.has(recordId) && !card.classList.contains("is-placeholder")) {
+          card.remove();
+        }
       });
 
       requestAnimationFrame(sizeHistoryToFive);
@@ -1192,9 +1275,10 @@
       return watch;
     };
 
-    const generateWallpaper = async (skip = false, imageUrl = "") => {
+    const generateWallpaper = async (skip = false, imageUrl = "", placeholderCard = null) => {
       const generationToSkip = skip ? foregroundGenerationId : null;
       const version = ++generationVersion;
+      let placeholderAdopted = false;
       foregroundGenerationId = null;
       setBusy(true, skip ? "skipping…" : "fetching…");
       setStageLoading(true, imageUrl ? "fetching your image…" : "fetching a wallpaper…");
@@ -1213,11 +1297,15 @@
         }
         const response = await fetch(endpoint, options);
         const data = await response.json();
-        if (version !== generationVersion) return;
         if (!response.ok) throw new Error(data.error || "generation failed");
+        if (placeholderCard) {
+          adoptHistoryPlaceholder(placeholderCard, data);
+          placeholderAdopted = true;
+        }
+        const completion = watchGeneration(data);
+        if (version !== generationVersion) return;
         foregroundGenerationId = data.id;
         await loadHistory(false);
-        const completion = watchGeneration(data);
 
         await displayWallpaper(data);
         if (version !== generationVersion) return;
@@ -1232,6 +1320,13 @@
         setPaletteGenerating(false);
         await loadHistory();
       } catch (error) {
+        if (
+          !placeholderAdopted &&
+          placeholderCard?.classList.contains("is-placeholder")
+        ) {
+          placeholderCard.remove();
+          loadHistory(false);
+        }
         if (version !== generationVersion) return;
         loaderText.textContent = error.message.toLowerCase();
         setPaletteGenerating(false);
@@ -1295,7 +1390,7 @@
         return;
       }
       notify("continuing in history");
-      generateWallpaper();
+      generateWallpaper(false, "", addHistoryPlaceholder());
     };
 
     generate.addEventListener("click", () => generateWallpaper(canSkip));
