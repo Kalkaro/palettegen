@@ -2,6 +2,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ SERVER = ROOT / "palette_server.py"
 ENV_KEYS = (
     "PALETTE_DATA_DIR",
     "PALETTE_HISTORY_DIR",
+    "PALETTE_MAX_HISTORY",
     "PALETTE_NIX",
     "PALETTE_NIX_PORTABLE",
 )
@@ -176,6 +178,96 @@ class PaletteServerRuntimeTests(unittest.TestCase):
         record = server.public_record({"id": "record", "content_type": "image/jpeg"})
 
         self.assertEqual(record, {"id": "record"})
+
+    def test_history_includes_generating_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = load_server({"PALETTE_HISTORY_DIR": directory})
+            pending_id = "20260813T120000000000Z-1"
+            ready_id = "20260813T110000000000Z-2"
+            pending_dir = server.HISTORY / pending_id
+            ready_dir = server.HISTORY / ready_id
+            pending_dir.mkdir()
+            ready_dir.mkdir()
+            server.atomic_write_json(
+                pending_dir / "metadata.json",
+                {"id": pending_id, "status": "generating", "sha256": "pending"},
+            )
+            server.atomic_write_json(
+                ready_dir / "metadata.json",
+                {
+                    "id": ready_id,
+                    "status": "ready",
+                    "sha256": "ready",
+                    "palette": {"base00": "18191c"},
+                },
+            )
+
+            records = server.history()
+
+        self.assertEqual(
+            [(record["id"], record["status"]) for record in records],
+            [(pending_id, "generating"), (ready_id, "ready")],
+        )
+
+    def test_cancel_active_generation_targets_one_job(self):
+        server = load_server({})
+        first_cancel = threading.Event()
+        second_cancel = threading.Event()
+        first_id = "20260813T120000000000Z-1"
+        second_id = "20260813T120001000000Z-2"
+        server.active_jobs.update(
+            {
+                first_id: {"id": first_id, "cancel": first_cancel, "process": None},
+                second_id: {
+                    "id": second_id,
+                    "cancel": second_cancel,
+                    "process": None,
+                },
+            }
+        )
+
+        self.assertTrue(server.cancel_active_generation(first_id))
+        self.assertTrue(first_cancel.is_set())
+        self.assertFalse(second_cancel.is_set())
+        self.assertTrue(server.cancel_active_generation())
+        self.assertTrue(second_cancel.is_set())
+
+    def test_generation_slots_allow_two_jobs(self):
+        server = load_server({})
+
+        self.assertTrue(server.generation_slots.acquire(blocking=False))
+        self.assertTrue(server.generation_slots.acquire(blocking=False))
+        self.assertFalse(server.generation_slots.acquire(blocking=False))
+
+        server.generation_slots.release()
+        server.generation_slots.release()
+
+    def test_pruning_preserves_an_active_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = load_server(
+                {
+                    "PALETTE_HISTORY_DIR": directory,
+                    "PALETTE_MAX_HISTORY": "1",
+                }
+            )
+            newest_id = "20260813T120002000000Z-1"
+            active_id = "20260813T120001000000Z-2"
+            oldest_id = "20260813T120000000000Z-3"
+            for record_id in (newest_id, active_id, oldest_id):
+                record_dir = server.HISTORY / record_id
+                record_dir.mkdir()
+                (record_dir / "wallpaper").write_bytes(b"wallpaper")
+            server.active_jobs[active_id] = {
+                "id": active_id,
+                "cancel": threading.Event(),
+                "process": None,
+            }
+
+            server.prune_history()
+
+            self.assertTrue((server.HISTORY / newest_id).is_dir())
+            self.assertTrue((server.HISTORY / active_id).is_dir())
+            self.assertFalse((server.HISTORY / oldest_id).exists())
 
 
 if __name__ == "__main__":

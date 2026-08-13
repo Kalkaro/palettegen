@@ -218,7 +218,8 @@
       gap: 8px;
     }
 
-    .url-prompt {
+    .url-prompt,
+    .continue-generation {
       width: 42px;
       height: 42px;
       display: grid;
@@ -236,7 +237,8 @@
         opacity 250ms ease;
     }
 
-    .url-prompt svg {
+    .url-prompt svg,
+    .continue-generation svg {
       width: 17px;
       height: 17px;
       fill: none;
@@ -246,10 +248,20 @@
       stroke-width: 2;
     }
 
-    .url-prompt:hover { transform: translateY(-2px); }
-    .url-prompt:active { transform: scale(.92); }
-    .url-prompt:disabled { opacity: .45; cursor: wait; }
-    .url-prompt:focus-visible {
+    .continue-generation {
+      font-size: .76rem;
+      font-weight: 760;
+      letter-spacing: -.02em;
+    }
+
+    .url-prompt:hover:not(:disabled),
+    .continue-generation:hover:not(:disabled) { transform: translateY(-2px); }
+    .url-prompt:active:not(:disabled),
+    .continue-generation:active:not(:disabled) { transform: scale(.92); }
+    .url-prompt:disabled,
+    .continue-generation:disabled { opacity: .35; cursor: not-allowed; }
+    .url-prompt:focus-visible,
+    .continue-generation:focus-visible {
       outline: 3px solid var(--base07);
       outline-offset: 3px;
     }
@@ -584,6 +596,16 @@
 
     .history-card:active { transform: scale(.97); }
 
+    .history-card:disabled {
+      cursor: wait;
+    }
+
+    .history-card.is-generating:hover,
+    .history-card.is-generating:active {
+      border-radius: 15px;
+      transform: none;
+    }
+
     .history-card img {
       width: 100%;
       height: 100%;
@@ -594,7 +616,14 @@
 
     .history-card:hover img { transform: scale(1.055); filter: saturate(1.08); }
 
-    .history-card span {
+    .history-card.is-generating img,
+    .history-card.is-generating:hover img {
+      opacity: .58;
+      filter: brightness(.62) saturate(.72);
+      transform: none;
+    }
+
+    .history-timestamp {
       position: absolute;
       right: 8px;
       bottom: 8px;
@@ -608,6 +637,29 @@
       text-align: left;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .history-progress {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-content: center;
+      justify-items: center;
+      gap: 7px;
+      background: rgb(0 0 0 / 12%);
+      color: white;
+      font-size: .63rem;
+      font-weight: 680;
+      letter-spacing: .01em;
+    }
+
+    .history-spinner {
+      width: 17px;
+      height: 17px;
+      border: 2px solid rgb(255 255 255 / 28%);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 800ms linear infinite;
     }
 
     .history-empty {
@@ -721,6 +773,15 @@
         <div class="generation-actions">
           <button class="generate" type="button">generate</button>
           <button
+            class="continue-generation"
+            type="button"
+            aria-label="keep this palette generating and start another wallpaper"
+            title="keep generating and start another"
+            disabled
+          >
+            +1
+          </button>
+          <button
             class="url-prompt"
             type="button"
             aria-label="generate from an image url"
@@ -804,13 +865,18 @@
     const historyList = document.querySelector(".history-list");
     const historyCount = document.querySelector(".history-count");
     const generate = document.querySelector(".generate");
+    const continueGeneration = document.querySelector(".continue-generation");
     const polarityToggle = document.querySelector(".polarity-toggle");
     const urlPrompt = document.querySelector(".url-prompt");
     const regenerate = document.querySelector(".regenerate");
     const toast = document.querySelector(".toast");
     let toastTimer;
+    let historyRefreshTimer;
+    let historyRequestVersion = 0;
     let generationVersion = 0;
     let canSkip = false;
+    let activeGenerationCount = 0;
+    let foregroundGenerationId = null;
     let currentRecordId = null;
 
     const playTitleSequence = () => {
@@ -881,12 +947,17 @@
       if (message) loaderText.textContent = message;
     };
 
+    const updateContinueAvailability = () => {
+      continueGeneration.disabled = !canSkip || activeGenerationCount >= 2;
+    };
+
     const setBusy = (active, label = "generating…", skippable = false) => {
       canSkip = skippable;
       generate.disabled = active && !skippable;
       urlPrompt.disabled = active && !skippable;
       regenerate.disabled = active || !currentRecordId;
       generate.textContent = active ? label : "generate again";
+      updateContinueAvailability();
     };
 
     const setPaletteGenerating = (active) => {
@@ -945,44 +1016,65 @@
     const renderHistory = (records) => {
       historyList.replaceChildren();
       historyCount.textContent = `${records.length} generation${records.length === 1 ? "" : "s"}`;
+      activeGenerationCount = records.filter((record) => record.status === "generating").length;
+      updateContinueAvailability();
 
       if (!records.length) {
         const empty = document.createElement("p");
         empty.className = "history-empty";
         empty.textContent = "generated wallpapers will stay here.";
         historyList.append(empty);
-        return;
+        return false;
       }
 
       records.forEach((record, index) => {
+        const isGenerating = record.status === "generating";
         const card = document.createElement("button");
         card.type = "button";
-        card.className = "history-card";
+        card.className = `history-card${isGenerating ? " is-generating" : ""}`;
+        card.disabled = isGenerating;
         card.style.setProperty("--i", Math.min(index, 12));
         const date = new Date(record.created_at);
         const label = new Intl.DateTimeFormat(undefined, {
           dateStyle: "medium",
           timeStyle: "short"
         }).format(date).toLowerCase();
-        card.title = record.tags;
+        card.title = isGenerating ? "generating palette" : record.tags;
+        card.setAttribute(
+          "aria-label",
+          isGenerating ? "palette generation in progress" : `open generation from ${label}`
+        );
         const thumbnail = document.createElement("img");
         const timestamp = document.createElement("span");
         thumbnail.src = record.image;
         thumbnail.alt = "";
+        timestamp.className = "history-timestamp";
         timestamp.textContent = label;
         card.append(thumbnail, timestamp);
-        card.addEventListener("click", async () => {
-          try {
-            await displayRecord(record);
-            window.scrollTo({ top: 0, behavior: "smooth" });
-          } catch (error) {
-            notify(error.message);
-          }
-        });
+        if (isGenerating) {
+          const progress = document.createElement("span");
+          const spinner = document.createElement("span");
+          const progressLabel = document.createElement("span");
+          progress.className = "history-progress";
+          spinner.className = "history-spinner";
+          progressLabel.textContent = "generating…";
+          progress.append(spinner, progressLabel);
+          card.append(progress);
+        } else {
+          card.addEventListener("click", async () => {
+            try {
+              await displayRecord(record);
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            } catch (error) {
+              notify(error.message);
+            }
+          });
+        }
         historyList.append(card);
       });
 
       requestAnimationFrame(sizeHistoryToFive);
+      return activeGenerationCount > 0;
     };
 
     const sizeHistoryToFive = () => {
@@ -1004,17 +1096,26 @@
       historyList.style.maxHeight = `${firstCard.offsetHeight * 5 + gap * 4 + padding}px`;
     };
 
-    const loadHistory = async () => {
+    const loadHistory = async (displayLatest = true) => {
+      clearTimeout(historyRefreshTimer);
+      const requestVersion = ++historyRequestVersion;
       const version = generationVersion;
       try {
         const response = await fetch("/api/history");
         const data = await response.json();
-        renderHistory(data.history);
-        if (!currentRecordId && version === generationVersion && data.history.length) {
-          await displayRecord(data.history[0]);
+        if (requestVersion !== historyRequestVersion) return;
+        const hasPending = renderHistory(data.history);
+        const latestReady = data.history.find((record) => record.status !== "generating");
+        if (displayLatest && !currentRecordId && version === generationVersion && latestReady) {
+          await displayRecord(latestReady);
+        }
+        if (hasPending) {
+          historyRefreshTimer = setTimeout(() => loadHistory(false), 900);
         }
       } catch {
-        historyCount.textContent = "unavailable";
+        if (requestVersion === historyRequestVersion) {
+          historyCount.textContent = "unavailable";
+        }
       }
     };
 
@@ -1039,7 +1140,9 @@
     };
 
     const generateWallpaper = async (skip = false, imageUrl = "") => {
+      const generationToSkip = skip ? foregroundGenerationId : null;
       const version = ++generationVersion;
+      foregroundGenerationId = null;
       setBusy(true, skip ? "skipping…" : "fetching…");
       setStageLoading(true, imageUrl ? "fetching your image…" : "fetching a wallpaper…");
       setPaletteGenerating(true);
@@ -1048,7 +1151,7 @@
         const parameters = new URLSearchParams({
           polarity: polarityToggle.checked ? "light" : "dark"
         });
-        if (skip) parameters.set("skip", "1");
+        if (skip) parameters.set("skip", generationToSkip || "1");
         const endpoint = `/api/generate?${parameters}`;
         const options = { method: "POST" };
         if (imageUrl) {
@@ -1059,6 +1162,8 @@
         const data = await response.json();
         if (version !== generationVersion) return;
         if (!response.ok) throw new Error(data.error || "generation failed");
+        foregroundGenerationId = data.id;
+        await loadHistory(false);
 
         await displayWallpaper(data);
         if (version !== generationVersion) return;
@@ -1079,6 +1184,7 @@
         notify(error.message);
       } finally {
         if (version === generationVersion) {
+          foregroundGenerationId = null;
           setStageLoading(false);
           setBusy(false);
         }
@@ -1091,6 +1197,7 @@
         return;
       }
       const version = ++generationVersion;
+      foregroundGenerationId = null;
       setBusy(true, "generating…");
       setPaletteGenerating(true);
       try {
@@ -1105,6 +1212,8 @@
         const data = await response.json();
         if (version !== generationVersion) return;
         if (!response.ok) throw new Error(data.error || "generation failed");
+        foregroundGenerationId = data.id;
+        await loadHistory(false);
         setBusy(true, "skip?", true);
 
         const completed = await waitForGeneration(data, version);
@@ -1118,11 +1227,24 @@
         setPaletteGenerating(false);
         notify(error.message);
       } finally {
-        if (version === generationVersion) setBusy(false);
+        if (version === generationVersion) {
+          foregroundGenerationId = null;
+          setBusy(false);
+        }
       }
     };
 
+    const continueWithAnother = () => {
+      if (!foregroundGenerationId || !canSkip) {
+        notify("nothing is generating");
+        return;
+      }
+      notify("continuing in history");
+      generateWallpaper();
+    };
+
     generate.addEventListener("click", () => generateWallpaper(canSkip));
+    continueGeneration.addEventListener("click", continueWithAnother);
     urlPrompt.addEventListener("click", () => {
       const value = prompt("paste a public https image url");
       if (value === null) return;

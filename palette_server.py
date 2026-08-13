@@ -79,9 +79,10 @@ RATE_LIMIT_COUNT = int(os.environ.get("PALETTE_RATE_LIMIT", "0"))
 RATE_LIMIT_WINDOW = 10 * 60
 ALLOWED_IMAGE_HOSTS = {"konachan.net"}
 IMAGE_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
-generation_lock = threading.Lock()
-active_job_lock = threading.Lock()
-active_job: dict[str, object] | None = None
+MAX_CONCURRENT_GENERATIONS = 2
+generation_slots = threading.BoundedSemaphore(MAX_CONCURRENT_GENERATIONS)
+active_jobs_lock = threading.Lock()
+active_jobs: dict[str, dict[str, object]] = {}
 RECORD_ID = re.compile(r"^[0-9TZ-]+$")
 HEX_COLOR = re.compile(r"^[0-9a-fA-F]{6}$")
 rate_lock = threading.Lock()
@@ -322,6 +323,8 @@ def public_record(record: dict[str, object]) -> dict[str, object]:
 def prune_history() -> None:
     if not HISTORY.is_dir() or (MAX_HISTORY_ITEMS <= 0 and MAX_HISTORY_BYTES <= 0):
         return
+    with active_jobs_lock:
+        active_record_ids = set(active_jobs)
     candidates: list[tuple[Path, int]] = []
     for directory in sorted(
         HISTORY.iterdir(), key=lambda item: item.name, reverse=True
@@ -338,6 +341,8 @@ def prune_history() -> None:
     retained_count = 0
     retained_size = 0
     for directory, size in candidates:
+        if directory.name in active_record_ids:
+            continue
         if (MAX_HISTORY_ITEMS <= 0 or retained_count < MAX_HISTORY_ITEMS) and (
             MAX_HISTORY_BYTES <= 0 or retained_size + size <= MAX_HISTORY_BYTES
         ):
@@ -409,8 +414,6 @@ def start_generation(
     polarity: str = "dark",
     supplied_image_url: str | None = None,
 ) -> dict[str, object]:
-    global active_job
-
     if polarity not in {"dark", "light"}:
         raise ValueError("Invalid palette polarity")
     validate_runtime()
@@ -480,8 +483,8 @@ def start_generation(
         "cancel": threading.Event(),
         "process": None,
     }
-    with active_job_lock:
-        active_job = job
+    with active_jobs_lock:
+        active_jobs[record_id] = job
 
     threading.Thread(
         target=finish_generation,
@@ -493,8 +496,6 @@ def start_generation(
 
 
 def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
-    global active_job
-
     if polarity not in {"dark", "light"} or not RECORD_ID.fullmatch(record_id):
         raise ValueError("Invalid regeneration request")
     validate_runtime()
@@ -547,8 +548,8 @@ def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
         "cancel": threading.Event(),
         "process": None,
     }
-    with active_job_lock:
-        active_job = job
+    with active_jobs_lock:
+        active_jobs[new_id] = job
     threading.Thread(
         target=finish_generation,
         args=(job,),
@@ -559,8 +560,6 @@ def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
 
 
 def finish_generation(job: dict[str, object]) -> None:
-    global active_job
-
     record_id = str(job["id"])
     cancel = job["cancel"]
     assert isinstance(cancel, threading.Event)
@@ -593,7 +592,7 @@ def finish_generation(job: dict[str, object]) -> None:
             text=True,
             start_new_session=True,
         )
-        with active_job_lock:
+        with active_jobs_lock:
             job["process"] = process
             should_cancel = cancel.is_set()
         if should_cancel:
@@ -649,19 +648,21 @@ def finish_generation(job: dict[str, object]) -> None:
         except (OSError, ValueError):
             pass
     finally:
-        with active_job_lock:
-            if active_job is job:
-                active_job = None
+        with active_jobs_lock:
+            active_jobs.pop(record_id, None)
         try:
             prune_history()
         except OSError as error:
             print(f"[palette] history cleanup failed: {error}")
-        generation_lock.release()
+        generation_slots.release()
 
 
-def cancel_active_generation() -> bool:
-    with active_job_lock:
-        job = active_job
+def cancel_active_generation(record_id: str | None = None) -> bool:
+    with active_jobs_lock:
+        if record_id is None:
+            job = next(reversed(active_jobs.values()), None)
+        else:
+            job = active_jobs.get(record_id)
         if job is None:
             return False
         cancel = job["cancel"]
@@ -701,7 +702,10 @@ def history() -> list[dict[str, object]]:
             ):
                 continue
             record = load_record(metadata_file)
-            if record.get("status", "ready") != "ready" or not record.get("palette"):
+            status = record.get("status", "ready")
+            if status not in {"generating", "ready"}:
+                continue
+            if status == "ready" and not record.get("palette"):
                 continue
             wallpaper = metadata_file.parent / "wallpaper"
             changed = False
@@ -1026,14 +1030,29 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         polarity = polarity_values[0]
-        should_skip = parameters.get("skip") == ["1"]
-        if should_skip:
-            cancel_active_generation()
-            acquired = generation_lock.acquire(timeout=15)
+        skip_values = parameters.get("skip", [])
+        if len(skip_values) > 1 or (
+            skip_values
+            and skip_values[0] != "1"
+            and not RECORD_ID.fullmatch(skip_values[0])
+        ):
+            self.send_json(
+                {"error": "Invalid generation to skip"}, HTTPStatus.BAD_REQUEST
+            )
+            return
+        skip_record_id = skip_values[0] if skip_values else None
+        if skip_record_id is not None:
+            cancel_active_generation(
+                None if skip_record_id == "1" else skip_record_id
+            )
+            acquired = generation_slots.acquire(timeout=15)
         else:
-            acquired = generation_lock.acquire(blocking=False)
+            acquired = generation_slots.acquire(blocking=False)
         if not acquired:
-            self.send_json({"error": "A palette is already being generated"}, 409)
+            self.send_json(
+                {"error": "Two palettes are already being generated"},
+                HTTPStatus.CONFLICT,
+            )
             return
         try:
             if source_record_id is not None:
@@ -1042,7 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = start_generation(polarity, supplied_image_url)
             self.send_json(result, 202)
         except Exception as error:
-            generation_lock.release()
+            generation_slots.release()
             print(f"[palette] request failed: {type(error).__name__}: {error}")
             self.send_json({"error": "Could not generate a wallpaper"}, 502)
 
