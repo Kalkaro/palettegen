@@ -648,6 +648,22 @@
       animation: none;
     }
 
+    .history-card.is-skip-placeholder {
+      background: #202124;
+    }
+
+    .history-card.is-skip-placeholder .history-progress {
+      background: transparent;
+    }
+
+    .history-card.is-skip-placeholder .history-thumbnail-current,
+    .history-card.is-skip-placeholder:hover .history-thumbnail-current {
+      opacity: 0;
+      filter: none;
+      transform: none;
+      animation: none;
+    }
+
     .history-card.is-blur-transition .history-thumbnail-current.is-fading {
       opacity: 0;
     }
@@ -662,6 +678,11 @@
 
     .history-card.is-blur-transition .history-thumbnail-incoming.is-visible {
       opacity: .58;
+    }
+
+    .history-card.is-skip-placeholder .history-thumbnail-incoming {
+      filter: none;
+      transform: none;
     }
 
     .history-timestamp {
@@ -1113,12 +1134,14 @@
           thumbnail.remove();
           requestAnimationFrame(() => {
             card.classList.remove("is-blur-transition");
+            card.classList.remove("is-skip-placeholder");
           });
         }, duration);
       };
       incoming.onerror = () => {
         incoming.remove();
         card.classList.remove("is-blur-transition");
+        card.classList.remove("is-skip-placeholder");
       };
       card.insertBefore(incoming, card.querySelector(".history-timestamp"));
       incoming.src = image;
@@ -1150,10 +1173,11 @@
       const thumbnail = card.querySelector("img");
       if (record.image && thumbnail.getAttribute("src") !== record.image) {
         if (isPlaceholder && thumbnail.getAttribute("src")) {
-          // Keep the decoded thumbnail mounted while Skip fades it into blur.
+          // Keep the decoded thumbnail mounted while Skip fades it to gray.
         } else if (
           wasPlaceholder &&
-          thumbnail.getAttribute("src") &&
+          (thumbnail.getAttribute("src") ||
+            card.classList.contains("is-skip-placeholder")) &&
           !card.classList.contains("is-blur-transition")
         ) {
           crossfadeHistoryThumbnail(card, thumbnail, record.image);
@@ -1210,18 +1234,19 @@
       const duration = reducedMotion ? 0 : 700;
       const thumbnail = card.querySelector(".history-thumbnail-current");
       const progress = card.querySelector(".history-progress");
+      card.classList.add("is-skip-placeholder");
       card.classList.add("is-skip-animating");
       const animation = thumbnail.animate(
         [
           {
             opacity: .58,
-            filter: "blur(0) brightness(.62) saturate(.72)",
+            filter: "brightness(.62) saturate(.72)",
             transform: "scale(1)"
           },
           {
-            opacity: .48,
-            filter: "blur(16px) brightness(.66) saturate(.72)",
-            transform: "scale(1.18)"
+            opacity: 0,
+            filter: "brightness(.62) saturate(.72)",
+            transform: "scale(1)"
           }
         ],
         { duration, easing: "cubic-bezier(.2,.8,.2,1)" }
