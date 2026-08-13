@@ -585,7 +585,10 @@
       transform: translateY(10px);
       animation: swatch-in 500ms cubic-bezier(.2,.8,.2,1) forwards;
       animation-delay: calc(var(--i) * 35ms);
-      transition: transform 300ms cubic-bezier(.2,.8,.2,1), border-radius 300ms ease;
+      transition:
+        transform 300ms cubic-bezier(.2,.8,.2,1),
+        border-radius 300ms ease,
+        background-color 550ms ease;
     }
 
     .history-card:hover {
@@ -649,7 +652,11 @@
     }
 
     .history-card.is-skip-placeholder {
-      background: #202124;
+      background-color: #202124;
+    }
+
+    .history-card.is-skip-placeholder.is-skip-background-fading {
+      background-color: var(--base01);
     }
 
     .history-card.is-skip-placeholder .history-progress {
@@ -1120,6 +1127,7 @@
       incoming.onload = () => {
         requestAnimationFrame(() => {
           thumbnail.classList.add("is-fading");
+          card.classList.add("is-skip-background-fading");
           incoming.classList.add("is-visible");
         });
         const duration = matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -1135,6 +1143,7 @@
           requestAnimationFrame(() => {
             card.classList.remove("is-blur-transition");
             card.classList.remove("is-skip-placeholder");
+            card.classList.remove("is-skip-background-fading");
           });
         }, duration);
       };
@@ -1142,6 +1151,7 @@
         incoming.remove();
         card.classList.remove("is-blur-transition");
         card.classList.remove("is-skip-placeholder");
+        card.classList.remove("is-skip-background-fading");
       };
       card.insertBefore(incoming, card.querySelector(".history-timestamp"));
       incoming.src = image;
