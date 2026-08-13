@@ -561,6 +561,29 @@
       font-size: .72rem;
     }
 
+    .history-tools {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    .clear-history {
+      padding: 0;
+      background: transparent;
+      color: var(--base04);
+      font-size: .68rem;
+      cursor: pointer;
+      transition: color 250ms ease, opacity 250ms ease;
+    }
+
+    .clear-history:hover:not(:disabled) { color: var(--base05); }
+    .clear-history:disabled { cursor: default; opacity: .35; }
+    .clear-history:focus-visible {
+      outline: 2px solid var(--base07);
+      outline-offset: 3px;
+      border-radius: 3px;
+    }
+
     .history-list {
       display: grid;
       grid-template-columns: 1fr;
@@ -611,7 +634,10 @@
       height: 100%;
       display: block;
       object-fit: cover;
-      transition: transform 650ms cubic-bezier(.2,.8,.2,1), filter 350ms ease;
+      transition:
+        transform 650ms cubic-bezier(.2,.8,.2,1),
+        filter 350ms ease,
+        opacity 350ms ease;
     }
 
     .history-card:hover img { transform: scale(1.055); filter: saturate(1.08); }
@@ -838,7 +864,10 @@
       <section class="history">
         <div class="history-head">
           <h2>history</h2>
-          <p class="history-count">0 generations</p>
+          <div class="history-tools">
+            <p class="history-count">0 generations</p>
+            <button class="clear-history" type="button">clear</button>
+          </div>
         </div>
         <div class="history-list">
           <p class="history-empty">generated wallpapers will stay here.</p>
@@ -864,6 +893,7 @@
     const palette = document.querySelector(".palette");
     const historyList = document.querySelector(".history-list");
     const historyCount = document.querySelector(".history-count");
+    const clearHistory = document.querySelector(".clear-history");
     const generate = document.querySelector(".generate");
     const continueGeneration = document.querySelector(".continue-generation");
     const polarityToggle = document.querySelector(".polarity-toggle");
@@ -871,8 +901,8 @@
     const regenerate = document.querySelector(".regenerate");
     const toast = document.querySelector(".toast");
     let toastTimer;
-    let historyRefreshTimer;
     let historyRequestVersion = 0;
+    const generationWatches = new Map();
     let generationVersion = 0;
     let canSkip = false;
     let activeGenerationCount = 0;
@@ -1013,64 +1043,100 @@
       setPaletteGenerating(false);
     };
 
+    const createHistoryCard = (record, index) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "history-card";
+      card.dataset.recordId = record.id;
+      card.style.setProperty("--i", Math.min(index, 12));
+
+      const thumbnail = document.createElement("img");
+      const timestamp = document.createElement("span");
+      thumbnail.alt = "";
+      timestamp.className = "history-timestamp";
+      card.append(thumbnail, timestamp);
+      card.addEventListener("click", async () => {
+        const selected = card.historyRecord;
+        if (!selected || selected.status === "generating") return;
+        try {
+          await displayRecord(selected);
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } catch (error) {
+          notify(error.message);
+        }
+      });
+      return card;
+    };
+
+    const updateHistoryCard = (card, record) => {
+      const isGenerating = record.status === "generating";
+      const date = new Date(record.created_at);
+      const label = new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short"
+      }).format(date).toLowerCase();
+      card.historyRecord = record;
+      card.classList.toggle("is-generating", isGenerating);
+      card.disabled = isGenerating;
+      card.title = isGenerating ? "generating palette" : record.tags;
+      card.setAttribute(
+        "aria-label",
+        isGenerating ? "palette generation in progress" : `open generation from ${label}`
+      );
+      const thumbnail = card.querySelector("img");
+      if (thumbnail.getAttribute("src") !== record.image) thumbnail.src = record.image;
+      card.querySelector(".history-timestamp").textContent = label;
+
+      let progress = card.querySelector(".history-progress");
+      if (isGenerating && !progress) {
+        progress = document.createElement("span");
+        progress.className = "history-progress";
+        const spinner = document.createElement("span");
+        const progressLabel = document.createElement("span");
+        spinner.className = "history-spinner";
+        progressLabel.textContent = "generating…";
+        progress.append(spinner, progressLabel);
+        card.append(progress);
+      } else if (!isGenerating) {
+        progress?.remove();
+      }
+    };
+
     const renderHistory = (records) => {
-      historyList.replaceChildren();
       historyCount.textContent = `${records.length} generation${records.length === 1 ? "" : "s"}`;
+      clearHistory.disabled = records.length === 0;
       activeGenerationCount = records.filter((record) => record.status === "generating").length;
       updateContinueAvailability();
 
       if (!records.length) {
-        const empty = document.createElement("p");
-        empty.className = "history-empty";
-        empty.textContent = "generated wallpapers will stay here.";
-        historyList.append(empty);
+        historyList.querySelectorAll(".history-card").forEach((card) => card.remove());
+        if (!historyList.querySelector(".history-empty")) {
+          const empty = document.createElement("p");
+          empty.className = "history-empty";
+          empty.textContent = "generated wallpapers will stay here.";
+          historyList.append(empty);
+        }
         return false;
       }
 
+      historyList.querySelector(".history-empty")?.remove();
+      const liveIds = new Set(records.map((record) => record.id));
+      const existingCards = new Map(
+        [...historyList.querySelectorAll(".history-card")].map((card) => [
+          card.dataset.recordId,
+          card
+        ])
+      );
+
       records.forEach((record, index) => {
-        const isGenerating = record.status === "generating";
-        const card = document.createElement("button");
-        card.type = "button";
-        card.className = `history-card${isGenerating ? " is-generating" : ""}`;
-        card.disabled = isGenerating;
-        card.style.setProperty("--i", Math.min(index, 12));
-        const date = new Date(record.created_at);
-        const label = new Intl.DateTimeFormat(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short"
-        }).format(date).toLowerCase();
-        card.title = isGenerating ? "generating palette" : record.tags;
-        card.setAttribute(
-          "aria-label",
-          isGenerating ? "palette generation in progress" : `open generation from ${label}`
-        );
-        const thumbnail = document.createElement("img");
-        const timestamp = document.createElement("span");
-        thumbnail.src = record.image;
-        thumbnail.alt = "";
-        timestamp.className = "history-timestamp";
-        timestamp.textContent = label;
-        card.append(thumbnail, timestamp);
-        if (isGenerating) {
-          const progress = document.createElement("span");
-          const spinner = document.createElement("span");
-          const progressLabel = document.createElement("span");
-          progress.className = "history-progress";
-          spinner.className = "history-spinner";
-          progressLabel.textContent = "generating…";
-          progress.append(spinner, progressLabel);
-          card.append(progress);
-        } else {
-          card.addEventListener("click", async () => {
-            try {
-              await displayRecord(record);
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            } catch (error) {
-              notify(error.message);
-            }
-          });
-        }
-        historyList.append(card);
+        const card = existingCards.get(record.id) || createHistoryCard(record, index);
+        updateHistoryCard(card, record);
+        const cardAtIndex = historyList.children[index];
+        if (cardAtIndex !== card) historyList.insertBefore(card, cardAtIndex || null);
+      });
+
+      existingCards.forEach((card, recordId) => {
+        if (!liveIds.has(recordId)) card.remove();
       });
 
       requestAnimationFrame(sizeHistoryToFive);
@@ -1097,7 +1163,6 @@
     };
 
     const loadHistory = async (displayLatest = true) => {
-      clearTimeout(historyRefreshTimer);
       const requestVersion = ++historyRequestVersion;
       const version = generationVersion;
       try {
@@ -1109,9 +1174,9 @@
         if (displayLatest && !currentRecordId && version === generationVersion && latestReady) {
           await displayRecord(latestReady);
         }
-        if (hasPending) {
-          historyRefreshTimer = setTimeout(() => loadHistory(false), 900);
-        }
+        if (hasPending) data.history
+          .filter((record) => record.status === "generating")
+          .forEach(watchGeneration);
       } catch {
         if (requestVersion === historyRequestVersion) {
           historyCount.textContent = "unavailable";
@@ -1119,14 +1184,12 @@
       }
     };
 
-    const waitForGeneration = async (data, version) => {
+    const pollGeneration = async (data) => {
       const deadline = Date.now() + 300000;
       let completed = data;
       while (completed.status === "generating") {
-        if (version !== generationVersion) return null;
         if (Date.now() > deadline) throw new Error("stylix generation timed out");
-        await new Promise((resolve) => setTimeout(resolve, 700));
-        if (version !== generationVersion) return null;
+        await new Promise((resolve) => setTimeout(resolve, 900));
         const response = await fetch(`/api/generation/${encodeURIComponent(data.id)}`);
         completed = await response.json();
         if (!response.ok) {
@@ -1137,6 +1200,24 @@
         throw new Error(completed.error || "stylix generation failed");
       }
       return completed;
+    };
+
+    const watchGeneration = (data) => {
+      const existing = generationWatches.get(data.id);
+      if (existing) return existing;
+      const watch = pollGeneration(data);
+      generationWatches.set(data.id, watch);
+      watch.then(
+        () => {
+          generationWatches.delete(data.id);
+          loadHistory(false);
+        },
+        () => {
+          generationWatches.delete(data.id);
+          loadHistory(false);
+        }
+      );
+      return watch;
     };
 
     const generateWallpaper = async (skip = false, imageUrl = "") => {
@@ -1164,6 +1245,7 @@
         if (!response.ok) throw new Error(data.error || "generation failed");
         foregroundGenerationId = data.id;
         await loadHistory(false);
+        const completion = watchGeneration(data);
 
         await displayWallpaper(data);
         if (version !== generationVersion) return;
@@ -1171,8 +1253,8 @@
         setBusy(true, "skip?", true);
         setPaletteGenerating(true);
 
-        const completed = await waitForGeneration(data, version);
-        if (!completed) return;
+        const completed = await completion;
+        if (version !== generationVersion) return;
 
         renderPalette(completed.palette);
         setPaletteGenerating(false);
@@ -1214,10 +1296,11 @@
         if (!response.ok) throw new Error(data.error || "generation failed");
         foregroundGenerationId = data.id;
         await loadHistory(false);
+        const completion = watchGeneration(data);
         setBusy(true, "skip?", true);
 
-        const completed = await waitForGeneration(data, version);
-        if (!completed) return;
+        const completed = await completion;
+        if (version !== generationVersion) return;
         currentRecordId = completed.id;
         renderPalette(completed.palette, true);
         setPaletteGenerating(false);
@@ -1243,8 +1326,28 @@
       generateWallpaper();
     };
 
+    const removeHistory = async () => {
+      if (!confirm("clear completed palette history?")) return;
+      clearHistory.disabled = true;
+      try {
+        const response = await fetch("/api/history", { method: "DELETE" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "could not clear history");
+        if (data.removed.includes(currentRecordId)) {
+          currentRecordId = null;
+          regenerate.disabled = true;
+        }
+        await loadHistory(false);
+        notify(`removed ${data.removed.length} generation${data.removed.length === 1 ? "" : "s"}`);
+      } catch (error) {
+        notify(error.message);
+        clearHistory.disabled = false;
+      }
+    };
+
     generate.addEventListener("click", () => generateWallpaper(canSkip));
     continueGeneration.addEventListener("click", continueWithAnother);
+    clearHistory.addEventListener("click", removeHistory);
     urlPrompt.addEventListener("click", () => {
       const value = prompt("paste a public https image url");
       if (value === null) return;

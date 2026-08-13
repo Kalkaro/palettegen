@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "palette_server.py"
 ENV_KEYS = (
     "PALETTE_DATA_DIR",
-    "PALETTE_HISTORY_DIR",
     "PALETTE_MAX_HISTORY",
     "PALETTE_NIX",
     "PALETTE_NIX_PORTABLE",
+    "XDG_DATA_HOME",
 )
 
 
@@ -89,20 +89,16 @@ class PaletteServerRuntimeTests(unittest.TestCase):
 
             self.assertEqual(
                 server.HISTORY,
-                Path(directory).resolve() / "palette-history",
+                Path(directory).resolve(),
             )
 
-    def test_history_dir_overrides_data_dir(self):
-        with tempfile.TemporaryDirectory() as data_directory:
-            with tempfile.TemporaryDirectory() as history_directory:
-                server = load_server(
-                    {
-                        "PALETTE_DATA_DIR": data_directory,
-                        "PALETTE_HISTORY_DIR": history_directory,
-                    }
-                )
+    def test_default_data_and_history_share_one_xdg_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = load_server({"XDG_DATA_HOME": directory})
+            expected = Path(directory).resolve() / "palette-generator"
 
-                self.assertEqual(server.HISTORY, Path(history_directory).resolve())
+            self.assertEqual(server.DATA_DIR, expected)
+            self.assertEqual(server.HISTORY, expected)
 
     def test_stylix_command_uses_configured_system_nix(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -181,7 +177,7 @@ class PaletteServerRuntimeTests(unittest.TestCase):
 
     def test_history_includes_generating_records(self):
         with tempfile.TemporaryDirectory() as directory:
-            server = load_server({"PALETTE_HISTORY_DIR": directory})
+            server = load_server({"PALETTE_DATA_DIR": directory})
             pending_id = "20260813T120000000000Z-1"
             ready_id = "20260813T110000000000Z-2"
             pending_dir = server.HISTORY / pending_id
@@ -209,6 +205,23 @@ class PaletteServerRuntimeTests(unittest.TestCase):
             [(pending_id, "generating"), (ready_id, "ready")],
         )
 
+    def test_startup_cleanup_removes_an_interrupted_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = load_server({"PALETTE_DATA_DIR": directory})
+            record_id = "20260813T120000000000Z-1"
+            record_dir = server.HISTORY / record_id
+            record_dir.mkdir()
+            server.atomic_write_json(
+                record_dir / "metadata.json",
+                {"id": record_id, "status": "generating", "sha256": "pending"},
+            )
+
+            server.remove_interrupted_generations()
+
+            self.assertFalse(record_dir.exists())
+            self.assertIsNone(server.generation_status(record_id))
+            self.assertEqual(server.history(), [])
+
     def test_cancel_active_generation_targets_one_job(self):
         server = load_server({})
         first_cancel = threading.Event()
@@ -232,6 +245,36 @@ class PaletteServerRuntimeTests(unittest.TestCase):
         self.assertTrue(server.cancel_active_generation())
         self.assertTrue(second_cancel.is_set())
 
+    def test_clear_history_removes_completed_records_and_keeps_active_ones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = load_server({"PALETTE_DATA_DIR": directory})
+            ready_id = "20260813T120002000000Z-1"
+            active_id = "20260813T120001000000Z-2"
+            error_id = "20260813T120000000000Z-3"
+            for record_id, status in (
+                (ready_id, "ready"),
+                (active_id, "generating"),
+                (error_id, "error"),
+            ):
+                record_dir = server.HISTORY / record_id
+                record_dir.mkdir()
+                server.atomic_write_json(
+                    record_dir / "metadata.json",
+                    {"id": record_id, "status": status},
+                )
+            server.active_jobs[active_id] = {
+                "id": active_id,
+                "cancel": threading.Event(),
+                "process": None,
+            }
+
+            removed = server.clear_history()
+
+            self.assertCountEqual(removed, [ready_id, error_id])
+            self.assertFalse((server.HISTORY / ready_id).exists())
+            self.assertTrue((server.HISTORY / active_id).is_dir())
+            self.assertFalse((server.HISTORY / error_id).exists())
+
     def test_generation_slots_allow_two_jobs(self):
         server = load_server({})
 
@@ -246,7 +289,7 @@ class PaletteServerRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             server = load_server(
                 {
-                    "PALETTE_HISTORY_DIR": directory,
+                    "PALETTE_DATA_DIR": directory,
                     "PALETTE_MAX_HISTORY": "1",
                 }
             )

@@ -35,15 +35,18 @@ from urllib3 import HTTPSConnectionPool, Timeout
 ROOT = Path(__file__).resolve().parent
 HTML = ROOT / "palette-showcase.html"
 DATA_DIR_CONFIG = os.environ.get("PALETTE_DATA_DIR", "").strip()
+DATA_HOME_CONFIG = os.environ.get("XDG_DATA_HOME", "").strip()
+DEFAULT_DATA_HOME = (
+    Path(DATA_HOME_CONFIG).expanduser().resolve()
+    if DATA_HOME_CONFIG
+    else Path.home() / ".local" / "share"
+)
 DATA_DIR = (
-    Path(DATA_DIR_CONFIG).expanduser().resolve() if DATA_DIR_CONFIG else ROOT
+    Path(DATA_DIR_CONFIG).expanduser().resolve()
+    if DATA_DIR_CONFIG
+    else DEFAULT_DATA_HOME / "palette-generator"
 )
-HISTORY_CONFIG = os.environ.get("PALETTE_HISTORY_DIR", "").strip()
-HISTORY = (
-    Path(HISTORY_CONFIG).expanduser().resolve()
-    if HISTORY_CONFIG
-    else DATA_DIR / "palette-history"
-)
+HISTORY = DATA_DIR
 MIN_WALLPAPER_WIDTH = 2560
 MIN_WALLPAPER_HEIGHT = 1440
 API_URL = "https://konachan.net/post.json?" + urlencode(
@@ -690,6 +693,51 @@ def generation_status(record_id: str) -> dict[str, object] | None:
     return public_record(record)
 
 
+def remove_interrupted_generations() -> None:
+    if not HISTORY.is_dir():
+        return
+    for metadata_file in HISTORY.glob("*/metadata.json"):
+        try:
+            if (
+                not RECORD_ID.fullmatch(metadata_file.parent.name)
+                or metadata_file.is_symlink()
+            ):
+                continue
+            record = load_record(metadata_file)
+            if record.get("status") != "generating":
+                continue
+            shutil.rmtree(metadata_file.parent)
+        except (OSError, ValueError):
+            continue
+
+
+def clear_history() -> list[str]:
+    if not HISTORY.is_dir():
+        return []
+    with active_jobs_lock:
+        active_record_ids = set(active_jobs)
+    removed = []
+    for directory in HISTORY.iterdir():
+        try:
+            if (
+                directory.name in active_record_ids
+                or not RECORD_ID.fullmatch(directory.name)
+                or not directory.is_dir()
+                or directory.is_symlink()
+            ):
+                continue
+            metadata_file = directory / "metadata.json"
+            if metadata_file.is_file() and not metadata_file.is_symlink():
+                record = load_record(metadata_file)
+                if record.get("status") == "generating":
+                    continue
+            shutil.rmtree(directory)
+            removed.append(directory.name)
+        except (OSError, ValueError):
+            continue
+    return removed
+
+
 def history() -> list[dict[str, object]]:
     if not HISTORY.is_dir():
         return []
@@ -1065,6 +1113,21 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[palette] request failed: {type(error).__name__}: {error}")
             self.send_json({"error": "Could not generate a wallpaper"}, 502)
 
+    def do_DELETE(self) -> None:
+        if not self.authorized():
+            return
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/history":
+            self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+            return
+        if not self.same_origin():
+            self.send_json(
+                {"error": "Cross-origin request denied"}, HTTPStatus.FORBIDDEN
+            )
+            return
+        removed = clear_history()
+        self.send_json({"removed": removed})
+
     def log_message(self, message: str, *args: object) -> None:
         rendered = (message % args).replace("\r", "").replace("\n", "")
         print(f"[palette] {self.client_address[0]} — {rendered[:1000]}")
@@ -1108,6 +1171,7 @@ if __name__ == "__main__":
         )
     DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     HISTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
+    remove_interrupted_generations()
     validate_runtime()
     prune_history()
     server = HardenedHTTPServer((HOST, PORT), Handler)

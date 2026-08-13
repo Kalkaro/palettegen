@@ -12,8 +12,8 @@ it.
 The application enforces:
 
 - authentication in public mode;
-- same-origin generation requests and an optional generation rate limit;
-- a single active Stylix process with a four-minute timeout;
+- same-origin mutating requests and an optional generation rate limit;
+- at most two active Stylix processes, each with a four-minute timeout;
 - HTTPS and host allowlisting for remote wallpaper downloads;
 - DNS-pinned public-HTTPS validation for user-supplied image URLs, including
   private, loopback, link-local, and reserved address blocking on every
@@ -35,7 +35,7 @@ Production checklist:
    account and mode `700`, and set `PALETTE_NIX_PORTABLE`.
 3. Put the application behind Caddy with automatic HTTPS.
 4. Allow inbound ports 80 and 443 only; keep 8765 private.
-5. Back up `palette-history` if the history matters.
+5. Back up the configured palette data directory if the history matters.
 6. Enable VM security updates and log rotation.
 7. Rotate the password if it may have been exposed.
 

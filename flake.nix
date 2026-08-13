@@ -62,12 +62,10 @@
               set -eu
 
               if [ -z "''${PALETTE_DATA_DIR:-}" ]; then
-                if [ -d "palette-history" ] || [ -f "palette-showcase.html" ]; then
-                  PALETTE_DATA_DIR="$PWD"
-                elif [ -n "''${XDG_STATE_HOME:-}" ]; then
-                  PALETTE_DATA_DIR="$XDG_STATE_HOME/palette-generator"
+                if [ -n "''${XDG_DATA_HOME:-}" ]; then
+                  PALETTE_DATA_DIR="$XDG_DATA_HOME/palette-generator"
                 elif [ -n "''${HOME:-}" ]; then
-                  PALETTE_DATA_DIR="$HOME/.local/state/palette-generator"
+                  PALETTE_DATA_DIR="$HOME/.local/share/palette-generator"
                 else
                   PALETTE_DATA_DIR="''${TMPDIR:-/tmp}/palette-generator"
                 fi
