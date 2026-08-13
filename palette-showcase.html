@@ -612,14 +612,6 @@
       background: color-mix(in srgb, var(--base02) 72%, var(--base01));
     }
 
-    .history-card.is-placeholder::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: color-mix(in srgb, var(--base04) 9%, transparent);
-      animation: placeholder-pulse 1200ms ease-in-out infinite alternate;
-    }
-
     .history-card img {
       width: 100%;
       height: 100%;
@@ -634,14 +626,39 @@
     .history-card:hover img { transform: scale(1.055); filter: saturate(1.08); }
 
     .history-card.is-generating img,
-    .history-card.is-generating:hover img,
-    .history-card.is-placeholder img {
+    .history-card.is-generating:hover img {
       opacity: .58;
       filter: brightness(.62) saturate(.72);
       transform: none;
     }
 
-    .history-card.is-placeholder img { opacity: 0; }
+    .history-card.is-placeholder .history-thumbnail-current,
+    .history-card.is-blur-transition .history-thumbnail-current,
+    .history-card.is-blur-transition:hover .history-thumbnail-current {
+      opacity: .48;
+      filter: blur(16px) brightness(.66) saturate(.72);
+      transform: scale(1.18);
+    }
+
+    .history-card.is-placeholder .history-thumbnail-current {
+      animation: placeholder-blur 1200ms ease-in-out infinite alternate;
+    }
+
+    .history-card.is-blur-transition .history-thumbnail-current.is-fading {
+      opacity: 0;
+    }
+
+    .history-card.is-blur-transition .history-thumbnail-incoming {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      filter: blur(16px) brightness(.66) saturate(.72);
+      transform: scale(1.18);
+    }
+
+    .history-card.is-blur-transition .history-thumbnail-incoming.is-visible {
+      opacity: .58;
+    }
 
     .history-timestamp {
       position: absolute;
@@ -716,7 +733,12 @@
     @keyframes swatch-in { to { opacity: 1; transform: none; } }
     @keyframes swatch-fade { to { opacity: 1; } }
     @keyframes spin { to { transform: rotate(360deg); } }
-    @keyframes placeholder-pulse { to { opacity: .38; } }
+    @keyframes placeholder-blur {
+      to {
+        opacity: .3;
+        filter: blur(21px) brightness(.58) saturate(.62);
+      }
+    }
     @keyframes prefix-sequence {
       0%, 100% {
         max-width: 0;
@@ -1044,6 +1066,7 @@
 
       const thumbnail = document.createElement("img");
       const timestamp = document.createElement("span");
+      thumbnail.className = "history-thumbnail-current";
       thumbnail.alt = "";
       timestamp.className = "history-timestamp";
       card.append(thumbnail, timestamp);
@@ -1060,7 +1083,38 @@
       return card;
     };
 
+    const crossfadeHistoryThumbnail = (card, thumbnail, image) => {
+      card.querySelector(".history-thumbnail-incoming")?.remove();
+      card.classList.add("is-blur-transition");
+      const incoming = document.createElement("img");
+      incoming.className = "history-thumbnail-incoming";
+      incoming.alt = "";
+      incoming.onload = () => {
+        requestAnimationFrame(() => {
+          thumbnail.classList.add("is-fading");
+          incoming.classList.add("is-visible");
+        });
+        const duration = matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? 0
+          : 550;
+        setTimeout(() => {
+          thumbnail.src = image;
+          thumbnail.classList.remove("is-fading");
+          incoming.remove();
+          card.classList.remove("is-blur-transition");
+        }, duration);
+      };
+      incoming.onerror = () => {
+        thumbnail.src = image;
+        incoming.remove();
+        card.classList.remove("is-blur-transition");
+      };
+      card.insertBefore(incoming, card.querySelector(".history-timestamp"));
+      incoming.src = image;
+    };
+
     const updateHistoryCard = (card, record) => {
+      const wasPlaceholder = card.classList.contains("is-placeholder");
       const isGenerating = record.status === "generating";
       const isPlaceholder = record.status === "fetching";
       const isPending = isGenerating || isPlaceholder;
@@ -1084,7 +1138,15 @@
       );
       const thumbnail = card.querySelector("img");
       if (record.image && thumbnail.getAttribute("src") !== record.image) {
-        thumbnail.src = record.image;
+        if (
+          wasPlaceholder &&
+          thumbnail.getAttribute("src") &&
+          !card.classList.contains("is-blur-transition")
+        ) {
+          crossfadeHistoryThumbnail(card, thumbnail, record.image);
+        } else if (!card.classList.contains("is-blur-transition")) {
+          thumbnail.src = record.image;
+        }
       } else if (!record.image) {
         thumbnail.removeAttribute("src");
       }
@@ -1110,15 +1172,17 @@
       }
     };
 
-    const addHistoryPlaceholder = () => {
-      historyList.querySelector(".history-empty")?.remove();
-      const placeholder = {
+    const historyPlaceholderRecord = () => ({
         id: `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         status: "fetching",
         created_at: new Date().toISOString(),
-        image: "",
+        image: activeImage?.currentSrc || activeImage?.src || "",
         tags: ""
-      };
+    });
+
+    const addHistoryPlaceholder = () => {
+      historyList.querySelector(".history-empty")?.remove();
+      const placeholder = historyPlaceholderRecord();
       const card = createHistoryCard(placeholder, 0);
       updateHistoryCard(card, placeholder);
       historyList.prepend(card);
@@ -1128,7 +1192,19 @@
       return card;
     };
 
+    const reuseHistoryCardAsPlaceholder = (recordId) => {
+      const card = [...historyList.querySelectorAll(".history-card")]
+        .find((candidate) => candidate.dataset.recordId === recordId);
+      if (!card) return addHistoryPlaceholder();
+      const placeholder = historyPlaceholderRecord();
+      card.dataset.replacesRecordId = recordId;
+      card.dataset.recordId = placeholder.id;
+      updateHistoryCard(card, placeholder);
+      return card;
+    };
+
     const adoptHistoryPlaceholder = (card, record) => {
+      delete card.dataset.replacesRecordId;
       card.dataset.recordId = record.id;
       updateHistoryCard(card, record);
     };
@@ -1140,8 +1216,15 @@
           .filter((card) => !card.classList.contains("is-placeholder"))
           .map((card) => card.dataset.recordId)
       );
-      const newGeneratingRecords = records.filter(
-        (record) => record.status === "generating" && !knownIds.has(record.id)
+      const replacedIds = new Set(
+        currentCards
+          .map((card) => card.dataset.replacesRecordId)
+          .filter(Boolean)
+      );
+      const visibleRecords = records.filter((record) => !replacedIds.has(record.id));
+      const newGeneratingRecords = visibleRecords.filter(
+        (record) => record.status === "generating" &&
+          !knownIds.has(record.id)
       );
       currentCards
         .filter((card) => card.classList.contains("is-placeholder"))
@@ -1152,13 +1235,13 @@
         });
 
       const placeholderCount = historyList.querySelectorAll(".is-placeholder").length;
-      const displayedCount = records.length + placeholderCount;
+      const displayedCount = visibleRecords.length + placeholderCount;
       historyCount.textContent = `${displayedCount} generation${displayedCount === 1 ? "" : "s"}`;
-      activeGenerationCount = records.filter((record) => record.status === "generating").length +
-        placeholderCount;
+      activeGenerationCount = visibleRecords
+        .filter((record) => record.status === "generating").length + placeholderCount;
       updateContinueAvailability();
 
-      if (!records.length) {
+      if (!visibleRecords.length) {
         historyList.querySelectorAll(".history-card:not(.is-placeholder)")
           .forEach((card) => card.remove());
         const placeholders = historyList.querySelectorAll(".is-placeholder").length;
@@ -1173,7 +1256,7 @@
       }
 
       historyList.querySelector(".history-empty")?.remove();
-      const liveIds = new Set(records.map((record) => record.id));
+      const liveIds = new Set(visibleRecords.map((record) => record.id));
       const existingCards = new Map(
         [...historyList.querySelectorAll(".history-card")].map((card) => [
           card.dataset.recordId,
@@ -1181,7 +1264,7 @@
         ])
       );
 
-      records.forEach((record, index) => {
+      visibleRecords.forEach((record, index) => {
         const card = existingCards.get(record.id) || createHistoryCard(record, index);
         updateHistoryCard(card, record);
         const cardAtIndex = historyList.children[index + placeholderCount];
@@ -1393,7 +1476,12 @@
       generateWallpaper(false, "", addHistoryPlaceholder());
     };
 
-    generate.addEventListener("click", () => generateWallpaper(canSkip));
+    generate.addEventListener("click", () => {
+      const placeholder = canSkip
+        ? reuseHistoryCardAsPlaceholder(foregroundGenerationId)
+        : null;
+      generateWallpaper(canSkip, "", placeholder);
+    });
     continueGeneration.addEventListener("click", continueWithAnother);
     urlPrompt.addEventListener("click", () => {
       const value = prompt("paste a public https image url");
@@ -1401,7 +1489,10 @@
       try {
         const imageUrl = new URL(value.trim());
         if (imageUrl.protocol !== "https:") throw new Error();
-        generateWallpaper(canSkip, imageUrl.href);
+        const placeholder = canSkip
+          ? reuseHistoryCardAsPlaceholder(foregroundGenerationId)
+          : null;
+        generateWallpaper(canSkip, imageUrl.href, placeholder);
       } catch {
         notify("please enter a valid https image url");
       }
