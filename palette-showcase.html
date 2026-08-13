@@ -644,17 +644,7 @@
       animation: placeholder-blur 1200ms ease-in-out infinite alternate;
     }
 
-    .history-card.is-placeholder.is-placeholder-entering .history-thumbnail-current {
-      opacity: .58;
-      filter: brightness(.62) saturate(.72);
-      transform: none;
-      animation: none;
-    }
-
-    .history-card.is-placeholder.is-placeholder-settling .history-thumbnail-current {
-      opacity: .48;
-      filter: blur(16px) brightness(.66) saturate(.72);
-      transform: scale(1.18);
+    .history-card.is-placeholder.is-skip-animating .history-thumbnail-current {
       animation: none;
     }
 
@@ -1211,24 +1201,48 @@
       return card;
     };
 
+    const animateSkipHistoryPlaceholder = (card) => {
+      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const duration = reducedMotion ? 0 : 700;
+      const thumbnail = card.querySelector(".history-thumbnail-current");
+      const progress = card.querySelector(".history-progress");
+      card.classList.add("is-skip-animating");
+      const animation = thumbnail.animate(
+        [
+          {
+            opacity: .58,
+            filter: "blur(0) brightness(.62) saturate(.72)",
+            transform: "scale(1)"
+          },
+          {
+            opacity: .48,
+            filter: "blur(16px) brightness(.66) saturate(.72)",
+            transform: "scale(1.18)"
+          }
+        ],
+        { duration, easing: "cubic-bezier(.2,.8,.2,1)" }
+      );
+      progress?.animate(
+        [{ opacity: 0 }, { opacity: 1 }],
+        { duration, easing: "ease-out" }
+      );
+      const transition = animation.finished.catch(() => {});
+      card.skipTransition = transition.finally(() => {
+        card.classList.remove("is-skip-animating");
+        delete card.skipTransition;
+      });
+    };
+
     const reuseHistoryCardAsPlaceholder = (recordId) => {
       const card = [...historyList.querySelectorAll(".history-card")]
-        .find((candidate) => candidate.dataset.recordId === recordId);
+        .find((candidate) => candidate.dataset.recordId === recordId) ||
+        historyList.querySelector(".history-card.is-generating");
       if (!card) return addHistoryPlaceholder();
       const placeholder = historyPlaceholderRecord();
-      card.classList.add("is-placeholder-entering");
       card.dataset.replacesRecordId = recordId;
       card.dataset.recordId = placeholder.id;
       updateHistoryCard(card, placeholder);
-      void card.offsetWidth;
-      requestAnimationFrame(() => {
-        card.classList.remove("is-placeholder-entering");
-        card.classList.add("is-placeholder-settling");
-        const duration = matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? 0
-          : 500;
-        setTimeout(() => card.classList.remove("is-placeholder-settling"), duration);
-      });
+      animateSkipHistoryPlaceholder(card);
       return card;
     };
 
@@ -1410,6 +1424,9 @@
         const response = await fetch(endpoint, options);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "generation failed");
+        if (placeholderCard?.skipTransition) {
+          await placeholderCard.skipTransition;
+        }
         if (placeholderCard) {
           adoptHistoryPlaceholder(placeholderCard, data);
           placeholderAdopted = true;
