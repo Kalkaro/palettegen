@@ -1105,14 +1105,18 @@
           ? 0
           : 550;
         setTimeout(() => {
-          thumbnail.src = image;
-          thumbnail.classList.remove("is-fading");
-          incoming.remove();
-          card.classList.remove("is-blur-transition");
+          incoming.classList.remove("is-visible");
+          incoming.classList.replace(
+            "history-thumbnail-incoming",
+            "history-thumbnail-current"
+          );
+          thumbnail.remove();
+          requestAnimationFrame(() => {
+            card.classList.remove("is-blur-transition");
+          });
         }, duration);
       };
       incoming.onerror = () => {
-        thumbnail.src = image;
         incoming.remove();
         card.classList.remove("is-blur-transition");
       };
