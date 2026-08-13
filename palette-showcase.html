@@ -671,6 +671,10 @@
       animation: none;
     }
 
+    .history-card.is-skip-placeholder .history-thumbnail-current.is-visible {
+      opacity: .58;
+    }
+
     .history-card.is-blur-transition .history-thumbnail-current.is-fading {
       opacity: 0;
     }
@@ -1134,7 +1138,6 @@
           ? 0
           : 550;
         setTimeout(() => {
-          incoming.classList.remove("is-visible");
           incoming.classList.replace(
             "history-thumbnail-incoming",
             "history-thumbnail-current"
@@ -1144,6 +1147,7 @@
             card.classList.remove("is-blur-transition");
             card.classList.remove("is-skip-placeholder");
             card.classList.remove("is-skip-background-fading");
+            incoming.classList.remove("is-visible");
           });
         }, duration);
       };
