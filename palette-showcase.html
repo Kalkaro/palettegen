@@ -659,10 +659,6 @@
       background-color: var(--base01);
     }
 
-    .history-card.is-skip-placeholder .history-progress {
-      background: transparent;
-    }
-
     .history-card.is-skip-placeholder .history-thumbnail-current,
     .history-card.is-skip-placeholder:hover .history-thumbnail-current {
       opacity: 0;
@@ -692,7 +688,7 @@
     }
 
     .history-card.is-skip-placeholder .history-thumbnail-incoming {
-      filter: none;
+      filter: brightness(.62) saturate(.72);
       transform: none;
     }
 
@@ -1247,7 +1243,6 @@
       const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
       const duration = reducedMotion ? 0 : 700;
       const thumbnail = card.querySelector(".history-thumbnail-current");
-      const progress = card.querySelector(".history-progress");
       card.classList.add("is-skip-placeholder");
       card.classList.add("is-skip-animating");
       const animation = thumbnail.animate(
@@ -1264,10 +1259,6 @@
           }
         ],
         { duration, easing: "cubic-bezier(.2,.8,.2,1)" }
-      );
-      progress?.animate(
-        [{ opacity: 0 }, { opacity: 1 }],
-        { duration, easing: "ease-out" }
       );
       const transition = animation.finished.catch(() => {});
       card.skipTransition = transition.finally(() => {
