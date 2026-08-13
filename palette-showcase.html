@@ -1155,7 +1155,9 @@
       );
       const thumbnail = card.querySelector("img");
       if (record.image && thumbnail.getAttribute("src") !== record.image) {
-        if (
+        if (isPlaceholder && thumbnail.getAttribute("src")) {
+          // Keep the decoded thumbnail mounted while Skip fades it into blur.
+        } else if (
           wasPlaceholder &&
           thumbnail.getAttribute("src") &&
           !card.classList.contains("is-blur-transition")
