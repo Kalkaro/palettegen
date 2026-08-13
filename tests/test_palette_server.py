@@ -245,36 +245,6 @@ class PaletteServerRuntimeTests(unittest.TestCase):
         self.assertTrue(server.cancel_active_generation())
         self.assertTrue(second_cancel.is_set())
 
-    def test_clear_history_removes_completed_records_and_keeps_active_ones(self):
-        with tempfile.TemporaryDirectory() as directory:
-            server = load_server({"PALETTE_DATA_DIR": directory})
-            ready_id = "20260813T120002000000Z-1"
-            active_id = "20260813T120001000000Z-2"
-            error_id = "20260813T120000000000Z-3"
-            for record_id, status in (
-                (ready_id, "ready"),
-                (active_id, "generating"),
-                (error_id, "error"),
-            ):
-                record_dir = server.HISTORY / record_id
-                record_dir.mkdir()
-                server.atomic_write_json(
-                    record_dir / "metadata.json",
-                    {"id": record_id, "status": status},
-                )
-            server.active_jobs[active_id] = {
-                "id": active_id,
-                "cancel": threading.Event(),
-                "process": None,
-            }
-
-            removed = server.clear_history()
-
-            self.assertCountEqual(removed, [ready_id, error_id])
-            self.assertFalse((server.HISTORY / ready_id).exists())
-            self.assertTrue((server.HISTORY / active_id).is_dir())
-            self.assertFalse((server.HISTORY / error_id).exists())
-
     def test_generation_slots_allow_four_jobs(self):
         server = load_server({})
 

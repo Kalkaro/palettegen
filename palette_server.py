@@ -711,33 +711,6 @@ def remove_interrupted_generations() -> None:
             continue
 
 
-def clear_history() -> list[str]:
-    if not HISTORY.is_dir():
-        return []
-    with active_jobs_lock:
-        active_record_ids = set(active_jobs)
-    removed = []
-    for directory in HISTORY.iterdir():
-        try:
-            if (
-                directory.name in active_record_ids
-                or not RECORD_ID.fullmatch(directory.name)
-                or not directory.is_dir()
-                or directory.is_symlink()
-            ):
-                continue
-            metadata_file = directory / "metadata.json"
-            if metadata_file.is_file() and not metadata_file.is_symlink():
-                record = load_record(metadata_file)
-                if record.get("status") == "generating":
-                    continue
-            shutil.rmtree(directory)
-            removed.append(directory.name)
-        except (OSError, ValueError):
-            continue
-    return removed
-
-
 def history() -> list[dict[str, object]]:
     if not HISTORY.is_dir():
         return []
@@ -1112,21 +1085,6 @@ class Handler(BaseHTTPRequestHandler):
             generation_slots.release()
             print(f"[palette] request failed: {type(error).__name__}: {error}")
             self.send_json({"error": "Could not generate a wallpaper"}, 502)
-
-    def do_DELETE(self) -> None:
-        if not self.authorized():
-            return
-        parsed = urlparse(self.path)
-        if parsed.path != "/api/history":
-            self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
-            return
-        if not self.same_origin():
-            self.send_json(
-                {"error": "Cross-origin request denied"}, HTTPStatus.FORBIDDEN
-            )
-            return
-        removed = clear_history()
-        self.send_json({"removed": removed})
 
     def log_message(self, message: str, *args: object) -> None:
         rendered = (message % args).replace("\r", "").replace("\n", "")
