@@ -275,15 +275,15 @@ class PaletteServerRuntimeTests(unittest.TestCase):
             self.assertTrue((server.HISTORY / active_id).is_dir())
             self.assertFalse((server.HISTORY / error_id).exists())
 
-    def test_generation_slots_allow_two_jobs(self):
+    def test_generation_slots_allow_four_jobs(self):
         server = load_server({})
 
-        self.assertTrue(server.generation_slots.acquire(blocking=False))
-        self.assertTrue(server.generation_slots.acquire(blocking=False))
+        for _ in range(4):
+            self.assertTrue(server.generation_slots.acquire(blocking=False))
         self.assertFalse(server.generation_slots.acquire(blocking=False))
 
-        server.generation_slots.release()
-        server.generation_slots.release()
+        for _ in range(4):
+            server.generation_slots.release()
 
     def test_pruning_preserves_an_active_generation(self):
         with tempfile.TemporaryDirectory() as directory:

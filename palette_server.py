@@ -82,7 +82,7 @@ RATE_LIMIT_COUNT = int(os.environ.get("PALETTE_RATE_LIMIT", "0"))
 RATE_LIMIT_WINDOW = 10 * 60
 ALLOWED_IMAGE_HOSTS = {"konachan.net"}
 IMAGE_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
-MAX_CONCURRENT_GENERATIONS = 2
+MAX_CONCURRENT_GENERATIONS = 4
 generation_slots = threading.BoundedSemaphore(MAX_CONCURRENT_GENERATIONS)
 active_jobs_lock = threading.Lock()
 active_jobs: dict[str, dict[str, object]] = {}
@@ -1098,7 +1098,7 @@ class Handler(BaseHTTPRequestHandler):
             acquired = generation_slots.acquire(blocking=False)
         if not acquired:
             self.send_json(
-                {"error": "Two palettes are already being generated"},
+                {"error": "Four palettes are already being generated"},
                 HTTPStatus.CONFLICT,
             )
             return

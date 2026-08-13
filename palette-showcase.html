@@ -978,7 +978,7 @@
     };
 
     const updateContinueAvailability = () => {
-      continueGeneration.disabled = !canSkip || activeGenerationCount >= 2;
+      continueGeneration.disabled = !canSkip || activeGenerationCount >= 4;
     };
 
     const setBusy = (active, label = "generating…", skippable = false) => {

@@ -13,7 +13,7 @@ The application enforces:
 
 - authentication in public mode;
 - same-origin mutating requests and an optional generation rate limit;
-- at most two active Stylix processes, each with a four-minute timeout;
+- at most four active Stylix processes, each with a four-minute timeout;
 - HTTPS and host allowlisting for remote wallpaper downloads;
 - DNS-pinned public-HTTPS validation for user-supplied image URLs, including
   private, loopback, link-local, and reserved address blocking on every
