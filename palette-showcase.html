@@ -644,6 +644,20 @@
       animation: placeholder-blur 1200ms ease-in-out infinite alternate;
     }
 
+    .history-card.is-placeholder.is-placeholder-entering .history-thumbnail-current {
+      opacity: .58;
+      filter: brightness(.62) saturate(.72);
+      transform: none;
+      animation: none;
+    }
+
+    .history-card.is-placeholder.is-placeholder-settling .history-thumbnail-current {
+      opacity: .48;
+      filter: blur(16px) brightness(.66) saturate(.72);
+      transform: scale(1.18);
+      animation: none;
+    }
+
     .history-card.is-blur-transition .history-thumbnail-current.is-fading {
       opacity: 0;
     }
@@ -689,7 +703,10 @@
       font-size: .63rem;
       font-weight: 680;
       letter-spacing: .01em;
+      transition: opacity 420ms ease;
     }
+
+    .history-card.is-placeholder-entering .history-progress { opacity: 0; }
 
     .history-spinner {
       width: 17px;
@@ -1197,9 +1214,19 @@
         .find((candidate) => candidate.dataset.recordId === recordId);
       if (!card) return addHistoryPlaceholder();
       const placeholder = historyPlaceholderRecord();
+      card.classList.add("is-placeholder-entering");
       card.dataset.replacesRecordId = recordId;
       card.dataset.recordId = placeholder.id;
       updateHistoryCard(card, placeholder);
+      void card.offsetWidth;
+      requestAnimationFrame(() => {
+        card.classList.remove("is-placeholder-entering");
+        card.classList.add("is-placeholder-settling");
+        const duration = matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? 0
+          : 500;
+        setTimeout(() => card.classList.remove("is-placeholder-settling"), duration);
+      });
       return card;
     };
 
