@@ -26,9 +26,13 @@
           );
           runtimePath = lib.makeBinPath [
             pkgs.git
+            pkgs.matugen
             pkgs.nix
+            pkgs.pywal16
           ];
           nix = "${pkgs.nix}/bin/nix";
+          matugen = "${pkgs.matugen}/bin/matugen";
+          pywal = "${pkgs.pywal16}/bin/wal";
         in
         {
           default = pkgs.stdenvNoCC.mkDerivation {
@@ -73,14 +77,18 @@
               fi
 
               export PATH="@runtimePath@:''${PATH:-}"
+              export PALETTE_MATUGEN="''${PALETTE_MATUGEN:-@matugen@}"
               export PALETTE_NIX="''${PALETTE_NIX:-@nix@}"
+              export PALETTE_PYWAL="''${PALETTE_PYWAL:-@pywal@}"
               export PYTHONNOUSERSITE=1
               exec @python@ @out@/share/palette-generator/palette_server.py "$@"
               EOF
               substituteInPlace "$out/bin/palette-generator" \
                 --replace-fail @shell@ "${pkgs.runtimeShell}" \
                 --replace-fail @runtimePath@ "${runtimePath}" \
+                --replace-fail @matugen@ "${matugen}" \
                 --replace-fail @nix@ "${nix}" \
+                --replace-fail @pywal@ "${pywal}" \
                 --replace-fail @python@ "${python}/bin/python3" \
                 --replace-fail @out@ "$out"
               chmod +x "$out/bin/palette-generator"
@@ -114,7 +122,9 @@
             packages = [
               python
               pkgs.git
+              pkgs.matugen
               pkgs.nix
+              pkgs.pywal16
             ];
 
             NIX_CONFIG = "experimental-features = nix-command flakes";

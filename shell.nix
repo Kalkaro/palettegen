@@ -10,7 +10,9 @@ pkgs.mkShell {
   packages = [
     python
     pkgs.git
+    pkgs.matugen
     pkgs.nix
+    pkgs.pywal16
   ];
 
   NIX_CONFIG = "experimental-features = nix-command flakes";

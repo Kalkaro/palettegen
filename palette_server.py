@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hardened Konachan + Stylix palette showcase server."""
+"""Hardened Konachan palette showcase with Stylix, Matugen, and Pywal16."""
 
 from __future__ import annotations
 
@@ -64,6 +64,8 @@ NIX_PORTABLE = (
     Path(NIX_PORTABLE_CONFIG).expanduser().resolve() if NIX_PORTABLE_CONFIG else None
 )
 NIX_COMMAND = os.environ.get("PALETTE_NIX", "").strip()
+MATUGEN_COMMAND = os.environ.get("PALETTE_MATUGEN", "").strip()
+PYWAL_COMMAND = os.environ.get("PALETTE_PYWAL", "").strip()
 GENERATOR_FLAKE = os.environ.get(
     "PALETTE_GENERATOR_FLAKE",
     "github:nix-community/stylix/66714e5ce44269ecc58c20d9196da8dbe1b27a31"
@@ -82,7 +84,46 @@ RATE_LIMIT_COUNT = int(os.environ.get("PALETTE_RATE_LIMIT", "0"))
 RATE_LIMIT_WINDOW = 10 * 60
 ALLOWED_IMAGE_HOSTS = {"konachan.net"}
 IMAGE_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
+IMAGE_SUFFIXES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+PALETTE_GENERATORS = {"matugen", "pywal16", "stylix"}
+MATUGEN_BASE16_ROLES = {
+    "base00": "background",
+    "base01": "surface_container_low",
+    "base02": "surface_container_high",
+    "base03": "outline",
+    "base04": "on_surface_variant",
+    "base05": "on_surface",
+    "base06": "on_background",
+    "base07": "inverse_surface",
+    "base08": "error",
+    "base09": "tertiary",
+    "base0A": "secondary",
+    "base0B": "primary",
+    "base0C": "tertiary",
+    "base0D": "primary",
+    "base0E": "secondary",
+    "base0F": "error_container",
+}
+PYWAL_BASE16_PATHS = {
+    "base00": ("colors", "color0"),
+    "base01": ("colors", "color0"),
+    "base02": ("colors", "color8"),
+    "base03": ("colors", "color8"),
+    "base04": ("colors", "color7"),
+    "base05": ("special", "foreground"),
+    "base06": ("colors", "color15"),
+    "base07": ("colors", "color15"),
+    "base08": ("colors", "color1"),
+    "base09": ("colors", "color9"),
+    "base0A": ("colors", "color3"),
+    "base0B": ("colors", "color2"),
+    "base0C": ("colors", "color6"),
+    "base0D": ("colors", "color4"),
+    "base0E": ("colors", "color5"),
+    "base0F": ("colors", "color13"),
+}
 MAX_CONCURRENT_GENERATIONS = 4
+MAX_HISTORY_PAGE_SIZE = 50
 generation_slots = threading.BoundedSemaphore(MAX_CONCURRENT_GENERATIONS)
 active_jobs_lock = threading.Lock()
 active_jobs: dict[str, dict[str, object]] = {}
@@ -409,17 +450,161 @@ def stylix_command(
     )
 
 
-def validate_runtime() -> None:
-    nix_runner()
+def matugen_runner() -> list[str]:
+    matugen_command = MATUGEN_COMMAND or "matugen"
+    matugen_path = Path(matugen_command).expanduser()
+    if not matugen_path.is_absolute():
+        located = shutil.which(matugen_command)
+        if located is None:
+            raise RuntimeError(
+                "Matugen is required for fast palette generation. Install Matugen "
+                "or set PALETTE_MATUGEN to its executable."
+            )
+        matugen_path = Path(located)
+    try:
+        resolved = matugen_path.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError("The configured Matugen command is missing") from error
+    if not resolved.is_file():
+        raise RuntimeError("The configured Matugen command is not a file")
+    return [str(resolved)]
+
+
+def matugen_command(
+    polarity: str,
+    wallpaper: Path,
+) -> tuple[list[str], dict[str, str]]:
+    return (
+        matugen_runner()
+        + [
+            "image",
+            str(wallpaper),
+            "--mode",
+            polarity,
+            "--type",
+            "scheme-tonal-spot",
+            "--source-color-index",
+            "0",
+            "--json",
+            "strip",
+            "--dry-run",
+            "--quiet",
+        ],
+        {},
+    )
+
+
+def matugen_palette(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("colors"), dict):
+        raise RuntimeError("Matugen returned invalid color data")
+    colors = payload["colors"]
+    palette = {}
+    for base16_name, role in MATUGEN_BASE16_ROLES.items():
+        try:
+            value = colors[role]["default"]["color"]
+        except (KeyError, TypeError) as error:
+            raise RuntimeError("Matugen returned incomplete color data") from error
+        if not isinstance(value, str):
+            raise RuntimeError("Matugen returned invalid color data")
+        value = value.removeprefix("#")
+        if not HEX_COLOR.fullmatch(value):
+            raise RuntimeError("Matugen returned invalid color data")
+        palette[base16_name] = value.lower()
+    return palette
+
+
+def pywal_runner() -> list[str]:
+    pywal_command = PYWAL_COMMAND or "wal"
+    pywal_path = Path(pywal_command).expanduser()
+    if not pywal_path.is_absolute():
+        located = shutil.which(pywal_command)
+        if located is None:
+            raise RuntimeError(
+                "Pywal16 is required for Pywal palette generation. Install "
+                "Pywal16 or set PALETTE_PYWAL to its wal executable."
+            )
+        pywal_path = Path(located)
+    try:
+        resolved = pywal_path.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError("The configured Pywal command is missing") from error
+    if not resolved.is_file():
+        raise RuntimeError("The configured Pywal command is not a file")
+    return [str(resolved)]
+
+
+def pywal_command(
+    polarity: str,
+    wallpaper: Path,
+    output: Path,
+) -> tuple[list[str], dict[str, str]]:
+    command = pywal_runner() + [
+        "--cols16",
+        "--contrast",
+        "1.5",
+        "--saturate",
+        "0.2",
+        "-i",
+        str(wallpaper),
+        "--out-dir",
+        str(output),
+    ]
+    if polarity == "light":
+        command.append("-l")
+    command.extend(["-n", "-s", "-t", "-e", "-q"])
+    return command, {}
+
+
+def pywal_palette(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Pywal returned invalid color data")
+    palette = {}
+    for base16_name, (section, color_name) in PYWAL_BASE16_PATHS.items():
+        try:
+            value = payload[section][color_name]
+        except (KeyError, TypeError) as error:
+            raise RuntimeError("Pywal returned incomplete color data") from error
+        if not isinstance(value, str):
+            raise RuntimeError("Pywal returned invalid color data")
+        value = value.removeprefix("#")
+        if not HEX_COLOR.fullmatch(value):
+            raise RuntimeError("Pywal returned invalid color data")
+        palette[base16_name] = value.lower()
+    return palette
+
+
+def validate_runtime(generator: str = "stylix") -> None:
+    if generator == "stylix":
+        nix_runner()
+    elif generator == "matugen":
+        matugen_runner()
+    elif generator == "pywal16":
+        pywal_runner()
+    else:
+        raise ValueError("Invalid palette generator")
+
+
+def validate_available_runtime() -> None:
+    errors = []
+    for generator in ("stylix", "matugen", "pywal16"):
+        try:
+            validate_runtime(generator)
+            return
+        except RuntimeError as error:
+            errors.append(str(error))
+    raise RuntimeError("No palette generator is available: " + "; ".join(errors))
 
 
 def start_generation(
     polarity: str = "dark",
     supplied_image_url: str | None = None,
+    generator: str = "stylix",
 ) -> dict[str, object]:
     if polarity not in {"dark", "light"}:
         raise ValueError("Invalid palette polarity")
-    validate_runtime()
+    if generator not in PALETTE_GENERATORS:
+        raise ValueError("Invalid palette generator")
+    validate_runtime(generator)
 
     if supplied_image_url is None:
         with request(API_URL, 30) as response:
@@ -476,6 +661,7 @@ def start_generation(
         "created_at": created_at.isoformat(),
         "content_type": content_type,
         "polarity": polarity,
+        "generator": generator,
         "status": "generating",
     }
     atomic_write_json(record_dir / "metadata.json", metadata)
@@ -483,6 +669,7 @@ def start_generation(
     job: dict[str, object] = {
         "id": record_id,
         "polarity": polarity,
+        "generator": generator,
         "cancel": threading.Event(),
         "process": None,
     }
@@ -492,16 +679,22 @@ def start_generation(
     threading.Thread(
         target=finish_generation,
         args=(job,),
-        name=f"stylix-{record_id}",
+        name=f"palette-{record_id}",
         daemon=True,
     ).start()
     return public_record(metadata)
 
 
-def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
-    if polarity not in {"dark", "light"} or not RECORD_ID.fullmatch(record_id):
+def regenerate_record(
+    record_id: str, polarity: str, generator: str = "stylix"
+) -> dict[str, object]:
+    if (
+        polarity not in {"dark", "light"}
+        or generator not in PALETTE_GENERATORS
+        or not RECORD_ID.fullmatch(record_id)
+    ):
         raise ValueError("Invalid regeneration request")
-    validate_runtime()
+    validate_runtime(generator)
     source_dir = HISTORY / record_id
     source_wallpaper = source_dir / "wallpaper"
     source_metadata_file = source_dir / "metadata.json"
@@ -541,6 +734,7 @@ def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
         "created_at": created_at.isoformat(),
         "content_type": content_type,
         "polarity": polarity,
+        "generator": generator,
         "status": "generating",
     }
     atomic_write_json(record_dir / "metadata.json", metadata)
@@ -548,6 +742,7 @@ def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
     job: dict[str, object] = {
         "id": new_id,
         "polarity": polarity,
+        "generator": generator,
         "cancel": threading.Event(),
         "process": None,
     }
@@ -556,7 +751,7 @@ def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
     threading.Thread(
         target=finish_generation,
         args=(job,),
-        name=f"stylix-{new_id}",
+        name=f"palette-{new_id}",
         daemon=True,
     ).start()
     return public_record(metadata)
@@ -564,11 +759,15 @@ def regenerate_record(record_id: str, polarity: str) -> dict[str, object]:
 
 def finish_generation(job: dict[str, object]) -> None:
     record_id = str(job["id"])
+    generator = str(job.get("generator", "stylix"))
     cancel = job["cancel"]
     assert isinstance(cancel, threading.Event)
     record_dir = HISTORY / record_id
     metadata_file = record_dir / "metadata.json"
     temporary_palette = record_dir / ".palette.json"
+    direct_input: Path | None = None
+    direct_runtime: Path | None = None
+    pywal_output: Path | None = None
 
     environment = {
         key: value
@@ -577,11 +776,49 @@ def finish_generation(job: dict[str, object]) -> None:
     }
 
     try:
-        command, runtime_environment = stylix_command(
-            str(job["polarity"]),
-            record_dir / "wallpaper",
-            temporary_palette,
-        )
+        if generator in {"matugen", "pywal16"}:
+            metadata = load_record(metadata_file)
+            suffix = IMAGE_SUFFIXES.get(str(metadata.get("content_type")), ".jpg")
+            direct_input = record_dir / f".{generator}-input{suffix}"
+            try:
+                os.link(record_dir / "wallpaper", direct_input)
+            except OSError:
+                shutil.copyfile(record_dir / "wallpaper", direct_input)
+            os.chmod(direct_input, 0o600)
+            direct_runtime = record_dir / f".{generator}-runtime"
+            direct_runtime.mkdir(mode=0o700)
+            if generator == "matugen":
+                command, runtime_environment = matugen_command(
+                    str(job["polarity"]), direct_input
+                )
+                runtime_environment.update(
+                    {
+                        "HOME": str(direct_runtime),
+                        "XDG_CACHE_HOME": str(direct_runtime / "cache"),
+                    }
+                )
+            else:
+                pywal_output = direct_runtime / "output"
+                pywal_output.mkdir(mode=0o700)
+                (direct_runtime / "config").mkdir(mode=0o700)
+                (direct_runtime / "cache").mkdir(mode=0o700)
+                command, runtime_environment = pywal_command(
+                    str(job["polarity"]), direct_input, pywal_output
+                )
+                runtime_environment.update(
+                    {
+                        "HOME": str(direct_runtime),
+                        "XDG_CONFIG_HOME": str(direct_runtime / "config"),
+                        "PYWAL_CACHE_DIR": str(direct_runtime / "cache"),
+                        "NO_FUN": "1",
+                    }
+                )
+        else:
+            command, runtime_environment = stylix_command(
+                str(job["polarity"]),
+                record_dir / "wallpaper",
+                temporary_palette,
+            )
         environment.update(runtime_environment)
         if cancel.is_set():
             raise InterruptedError("Palette generation skipped")
@@ -600,17 +837,42 @@ def finish_generation(job: dict[str, object]) -> None:
             should_cancel = cancel.is_set()
         if should_cancel:
             os.killpg(process.pid, signal.SIGTERM)
-        stdout, stderr = process.communicate(timeout=240)
+        stdout, stderr = process.communicate(
+            timeout=30 if generator != "stylix" else 240
+        )
         if cancel.is_set():
             raise InterruptedError("Palette generation skipped")
         if process.returncode:
             raise RuntimeError(
-                stderr.strip() or stdout.strip() or "Stylix generation failed"
+                stderr.strip()
+                or stdout.strip()
+                or f"{generator.title()} generation failed"
             )
 
-        if temporary_palette.stat().st_size > 64 * 1024:
-            raise RuntimeError("Stylix returned an oversized palette")
-        palette = json.loads(temporary_palette.read_text(encoding="utf-8"))
+        if generator == "matugen":
+            if len(stdout.encode()) > 256 * 1024:
+                raise RuntimeError("Matugen returned oversized color data")
+            try:
+                palette = matugen_palette(json.loads(stdout))
+            except json.JSONDecodeError as error:
+                raise RuntimeError("Matugen returned invalid JSON") from error
+            atomic_write_json(temporary_palette, palette)
+        elif generator == "pywal16":
+            assert pywal_output is not None
+            pywal_colors = pywal_output / "colors.json"
+            if pywal_colors.stat().st_size > 64 * 1024:
+                raise RuntimeError("Pywal returned oversized color data")
+            try:
+                palette = pywal_palette(
+                    json.loads(pywal_colors.read_text(encoding="utf-8"))
+                )
+            except json.JSONDecodeError as error:
+                raise RuntimeError("Pywal returned invalid JSON") from error
+            atomic_write_json(temporary_palette, palette)
+        else:
+            if temporary_palette.stat().st_size > 64 * 1024:
+                raise RuntimeError("Stylix returned an oversized palette")
+            palette = json.loads(temporary_palette.read_text(encoding="utf-8"))
         if (
             not isinstance(palette, dict)
             or set(palette) != {f"base{i:02X}" for i in range(16)}
@@ -619,7 +881,7 @@ def finish_generation(job: dict[str, object]) -> None:
                 for value in palette.values()
             )
         ):
-            raise RuntimeError("Stylix returned an incomplete palette")
+            raise RuntimeError("Palette generator returned an incomplete palette")
         os.replace(temporary_palette, record_dir / "palette.json")
         os.chmod(record_dir / "palette.json", 0o600)
         metadata = load_record(metadata_file)
@@ -651,6 +913,10 @@ def finish_generation(job: dict[str, object]) -> None:
         except (OSError, ValueError):
             pass
     finally:
+        if direct_input is not None:
+            direct_input.unlink(missing_ok=True)
+        if direct_runtime is not None:
+            shutil.rmtree(direct_runtime, ignore_errors=True)
         with active_jobs_lock:
             active_jobs.pop(record_id, None)
         try:
@@ -745,6 +1011,24 @@ def history() -> list[dict[str, object]]:
     if MAX_HISTORY_ITEMS > 0:
         return records[:MAX_HISTORY_ITEMS]
     return records
+
+
+def history_page(limit: int = 10, before: str | None = None) -> dict[str, object]:
+    if limit < 1 or limit > MAX_HISTORY_PAGE_SIZE:
+        raise ValueError("Invalid history page size")
+    if before is not None and not RECORD_ID.fullmatch(before):
+        raise ValueError("Invalid history cursor")
+
+    records = history()
+    if before is not None:
+        records = [record for record in records if str(record.get("id", "")) < before]
+    page = records[:limit]
+    has_more = len(records) > limit
+    return {
+        "history": page,
+        "has_more": has_more,
+        "next_cursor": str(page[-1]["id"]) if has_more and page else None,
+    }
 
 
 def inline_script_hash() -> str:
@@ -926,11 +1210,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self.authorized():
             return
-        path = urlparse(self.path).path
+        parsed_request = urlparse(self.path)
+        path = parsed_request.path
         if path in {"/", "/palette-showcase.html"}:
             self.send_bytes(HTML.read_bytes(), "text/html; charset=utf-8")
         elif path == "/api/history":
-            self.send_json({"history": history()})
+            parameters = parse_qs(parsed_request.query, keep_blank_values=True)
+            limit_values = parameters.get("limit", ["10"])
+            before_values = parameters.get("before", [])
+            if len(limit_values) != 1 or len(before_values) > 1:
+                self.send_json({"error": "Invalid history page"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                limit = int(limit_values[0])
+                before = before_values[0] if before_values else None
+                self.send_json(history_page(limit, before))
+            except ValueError:
+                self.send_json({"error": "Invalid history page"}, HTTPStatus.BAD_REQUEST)
         elif path.startswith("/api/generation/"):
             record_id = path.rsplit("/", 1)[-1]
             record = generation_status(record_id)
@@ -1051,6 +1347,16 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         polarity = polarity_values[0]
+        generator_values = parameters.get("generator", ["stylix"])
+        if (
+            len(generator_values) != 1
+            or generator_values[0] not in PALETTE_GENERATORS
+        ):
+            self.send_json(
+                {"error": "Invalid palette generator"}, HTTPStatus.BAD_REQUEST
+            )
+            return
+        generator = generator_values[0]
         skip_values = parameters.get("skip", [])
         if len(skip_values) > 1 or (
             skip_values
@@ -1077,9 +1383,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if source_record_id is not None:
-                result = regenerate_record(source_record_id, polarity)
+                result = regenerate_record(source_record_id, polarity, generator)
             else:
-                result = start_generation(polarity, supplied_image_url)
+                result = start_generation(polarity, supplied_image_url, generator)
             self.send_json(result, 202)
         except Exception as error:
             generation_slots.release()
@@ -1130,7 +1436,7 @@ if __name__ == "__main__":
     DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     HISTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
     remove_interrupted_generations()
-    validate_runtime()
+    validate_available_runtime()
     prune_history()
     server = HardenedHTTPServer((HOST, PORT), Handler)
     print(f"Wallpaper palette: http://{HOST}:{PORT}")

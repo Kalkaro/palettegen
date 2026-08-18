@@ -118,6 +118,69 @@
       gap: 12px;
     }
 
+    .palette-controls {
+      display: grid;
+      gap: 8px;
+      justify-items: center;
+    }
+
+    .palette-controls .polarity-control {
+      display: grid;
+      grid-template-columns: 48px 38px 48px;
+    }
+
+    .palette-controls .polarity-control > span:first-child { text-align: right; }
+
+    .generator-control {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2px;
+      padding: 3px;
+      border: 1px solid color-mix(in srgb, var(--base04) 28%, transparent);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--base01) 88%, transparent);
+      transition: border-color 300ms ease, background-color 500ms ease;
+    }
+
+    .generator-option {
+      position: relative;
+      cursor: pointer;
+    }
+
+    .generator-option input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+
+    .generator-option span {
+      display: block;
+      padding: 5px 9px;
+      border-radius: 999px;
+      color: var(--base04);
+      font-size: .66rem;
+      font-weight: 650;
+      text-align: center;
+      opacity: .55;
+      transition:
+        color 350ms ease,
+        opacity 250ms ease,
+        background-color 450ms ease;
+    }
+
+    .generator-option input:checked + span {
+      background: var(--base05);
+      color: var(--base00);
+      opacity: 1;
+    }
+
+    .generator-option input:focus-visible + span {
+      outline: 3px solid var(--base07);
+      outline-offset: 3px;
+    }
+
     .polarity-control {
       display: flex;
       align-items: center;
@@ -843,12 +906,28 @@
         </h1>
       </div>
       <div class="header-actions">
-        <label class="polarity-control">
-          <span>dark</span>
-          <input class="polarity-toggle" type="checkbox" aria-label="use light polarity">
-          <span class="polarity-track" aria-hidden="true"></span>
-          <span>light</span>
-        </label>
+        <div class="palette-controls">
+          <div class="generator-control" role="radiogroup" aria-label="palette generator">
+            <label class="generator-option">
+              <input type="radio" name="generator" value="stylix" checked>
+              <span>stylix</span>
+            </label>
+            <label class="generator-option">
+              <input type="radio" name="generator" value="matugen">
+              <span>matugen</span>
+            </label>
+            <label class="generator-option">
+              <input type="radio" name="generator" value="pywal16">
+              <span>pywal</span>
+            </label>
+          </div>
+          <label class="polarity-control">
+            <span>dark</span>
+            <input class="polarity-toggle" type="checkbox" aria-label="use light polarity">
+            <span class="polarity-track" aria-hidden="true"></span>
+            <span>light</span>
+          </label>
+        </div>
         <div class="generation-actions">
           <button class="generate" type="button">generate</button>
           <button
@@ -949,8 +1028,13 @@
     const urlPrompt = document.querySelector(".url-prompt");
     const regenerate = document.querySelector(".regenerate");
     const toast = document.querySelector(".toast");
+    const HISTORY_INITIAL_LIMIT = 10;
     let toastTimer;
     let historyRequestVersion = 0;
+    let historyRecords = [];
+    let historyNextCursor = null;
+    let historyHasMore = false;
+    let historyPageLoading = false;
     const generationWatches = new Map();
     let generationVersion = 0;
     let canSkip = false;
@@ -979,6 +1063,11 @@
       toast.classList.add("show");
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
+    };
+
+    const updateHistoryCount = (count) => {
+      const suffix = historyHasMore ? "+" : "";
+      historyCount.textContent = `${count}${suffix} generation${count === 1 ? "" : "s"}`;
     };
 
     const renderPalette = (colors, fade = false) => {
@@ -1234,7 +1323,7 @@
       updateHistoryCard(card, placeholder);
       historyList.prepend(card);
       const count = historyList.querySelectorAll(".history-card").length;
-      historyCount.textContent = `${count} generation${count === 1 ? "" : "s"}`;
+      updateHistoryCount(count);
       requestAnimationFrame(sizeHistoryToFive);
       return card;
     };
@@ -1313,7 +1402,7 @@
 
       const placeholderCount = historyList.querySelectorAll(".is-placeholder").length;
       const displayedCount = visibleRecords.length + placeholderCount;
-      historyCount.textContent = `${displayedCount} generation${displayedCount === 1 ? "" : "s"}`;
+      updateHistoryCount(displayedCount);
       activeGenerationCount = visibleRecords
         .filter((record) => record.status === "generating").length + placeholderCount;
       updateContinueAvailability();
@@ -1322,7 +1411,7 @@
         historyList.querySelectorAll(".history-card:not(.is-placeholder)")
           .forEach((card) => card.remove());
         const placeholders = historyList.querySelectorAll(".is-placeholder").length;
-        historyCount.textContent = `${placeholders} generation${placeholders === 1 ? "" : "s"}`;
+        updateHistoryCount(placeholders);
         if (!placeholders && !historyList.querySelector(".history-empty")) {
           const empty = document.createElement("p");
           empty.className = "history-empty";
@@ -1381,10 +1470,26 @@
       const requestVersion = ++historyRequestVersion;
       const version = generationVersion;
       try {
-        const response = await fetch("/api/history");
+        const response = await fetch(`/api/history?limit=${HISTORY_INITIAL_LIMIT}`);
         const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "could not load history");
         if (requestVersion !== historyRequestVersion) return;
-        const hasPending = renderHistory(data.history);
+        const previousRecords = historyRecords;
+        const previousHasMore = historyHasMore;
+        const firstPageEnd = data.history.at(-1)?.id;
+        const cachedOlderRecords = firstPageEnd
+          ? previousRecords.filter((record) => record.id < firstPageEnd)
+          : [];
+        const firstPageIds = new Set(data.history.map((record) => record.id));
+        historyRecords = [
+          ...data.history,
+          ...cachedOlderRecords.filter((record) => !firstPageIds.has(record.id))
+        ];
+        historyHasMore = cachedOlderRecords.length ? previousHasMore : Boolean(data.has_more);
+        historyNextCursor = historyHasMore
+          ? historyRecords.at(-1)?.id || data.next_cursor
+          : null;
+        const hasPending = renderHistory(historyRecords);
         const latestReady = data.history.find((record) => record.status !== "generating");
         if (displayLatest && !currentRecordId && version === generationVersion && latestReady) {
           await displayRecord(latestReady);
@@ -1399,12 +1504,57 @@
       }
     };
 
+    const loadOlderHistory = async (limit = 1) => {
+      if (historyPageLoading || !historyHasMore || !historyNextCursor) return;
+      historyPageLoading = true;
+      const requestVersion = historyRequestVersion;
+      try {
+        const parameters = new URLSearchParams({
+          limit: String(Math.max(1, Math.min(limit, 50))),
+          before: historyNextCursor
+        });
+        const response = await fetch(`/api/history?${parameters}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "could not load older history");
+        if (requestVersion !== historyRequestVersion) return;
+        const knownIds = new Set(historyRecords.map((record) => record.id));
+        historyRecords.push(...data.history.filter((record) => !knownIds.has(record.id)));
+        historyHasMore = Boolean(data.has_more);
+        historyNextCursor = data.next_cursor;
+        renderHistory(historyRecords);
+      } catch (error) {
+        if (requestVersion === historyRequestVersion) notify(error.message);
+      } finally {
+        historyPageLoading = false;
+        if (innerWidth > 780) requestAnimationFrame(loadHistoryForScroll);
+      }
+    };
+
+    const loadHistoryForScroll = () => {
+      if (historyPageLoading || !historyHasMore) return;
+      if (innerWidth <= 780) {
+        const historyBottom = historyList.getBoundingClientRect().bottom;
+        if (historyBottom <= innerHeight + 160) loadOlderHistory(1);
+        return;
+      }
+      const firstCard = historyList.querySelector(".history-card");
+      if (!firstCard || historyList.scrollTop <= 0) return;
+      const styles = getComputedStyle(historyList);
+      const rowStep = firstCard.offsetHeight + (parseFloat(styles.rowGap) || 0);
+      const revealedRows = Math.ceil(historyList.scrollTop / rowStep);
+      const desiredRecords = HISTORY_INITIAL_LIMIT + revealedRows;
+      if (historyRecords.length < desiredRecords) {
+        loadOlderHistory(desiredRecords - historyRecords.length);
+      }
+    };
+
     const pollGeneration = async (data) => {
       const deadline = Date.now() + 300000;
+      const pollInterval = data.generator === "stylix" ? 900 : 150;
       let completed = data;
       while (completed.status === "generating") {
-        if (Date.now() > deadline) throw new Error("stylix generation timed out");
-        await new Promise((resolve) => setTimeout(resolve, 900));
+        if (Date.now() > deadline) throw new Error("palette generation timed out");
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
         const response = await fetch(`/api/generation/${encodeURIComponent(data.id)}`);
         completed = await response.json();
         if (!response.ok) {
@@ -1446,7 +1596,8 @@
 
       try {
         const parameters = new URLSearchParams({
-          polarity: polarityToggle.checked ? "light" : "dark"
+          polarity: polarityToggle.checked ? "light" : "dark",
+          generator: document.querySelector('input[name="generator"]:checked').value
         });
         if (skip) parameters.set("skip", generationToSkip || "1");
         const endpoint = `/api/generate?${parameters}`;
@@ -1514,7 +1665,8 @@
       setPaletteGenerating(true);
       try {
         const parameters = new URLSearchParams({
-          polarity: polarityToggle.checked ? "light" : "dark"
+          polarity: polarityToggle.checked ? "light" : "dark",
+          generator: document.querySelector('input[name="generator"]:checked').value
         });
         const response = await fetch(`/api/generate?${parameters}`, {
           method: "POST",
@@ -1593,7 +1745,12 @@
       await navigator.clipboard.writeText(copyHash.dataset.value);
       notify("copied hash");
     });
-    addEventListener("resize", sizeHistoryToFive);
+    historyList.addEventListener("scroll", loadHistoryForScroll, { passive: true });
+    addEventListener("scroll", loadHistoryForScroll, { passive: true });
+    addEventListener("resize", () => {
+      sizeHistoryToFive();
+      loadHistoryForScroll();
+    });
     loadHistory();
   </script>
 </body>
